@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+
+# Backend binary
+backend/*.exe
+backend/kroomprint
+backend/backend
+
+# Uploads & temp files
+backend/uploads/
+backend/data/
+*.db
+*.sqlite
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go build cache
+backend/vendor/

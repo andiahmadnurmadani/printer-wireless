@@ -1,0 +1,283 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { api } from '../api/client'
+
+const AppContext = createContext(null)
+
+export function useApp() {
+  const ctx = useContext(AppContext)
+  if (!ctx) throw new Error('useApp must be used within AppProvider')
+  return ctx
+}
+
+export function AppProvider({ children }) {
+  const [printers, setPrinters] = useState([])
+  const [jobs, setJobs] = useState([])
+  const [history, setHistory] = useState([])
+  const [settings, setSettings] = useState({ autoRefresh: true, notifications: true, darkMode: false, compactQueue: false })
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [toasts, setToasts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [connected, setConnected] = useState(false)
+  const [backendInfo, setBackendInfo] = useState(null)
+
+  const toast = useCallback((message, type = 'success') => {
+    const id = Math.random().toString(36).slice(2, 8)
+    setToasts((t) => [...t, { id, message, type }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200)
+  }, [])
+
+  // ── Initial load + health ──
+  useEffect(() => {
+    let cancelled = false
+    async function boot() {
+      try {
+        const health = await api.health()
+        if (!cancelled) {
+          setBackendInfo(health)
+          setConnected(true)
+        }
+        const [ps, js, hs, st] = await Promise.all([api.listPrinters(), api.listJobs(), api.listHistory(), api.getSettings()])
+        if (cancelled) return
+        setPrinters(ps)
+        setJobs(js)
+        setHistory(hs)
+        setSettings((prev) => ({ ...prev, ...st }))
+      } catch (e) {
+        if (!cancelled) {
+          setConnected(false)
+          toast(`Cannot reach backend: ${e.message}`, 'error')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    boot()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // ── Live polling (queue + printer status + history) ──
+  useEffect(() => {
+    let timer
+    let active = true
+    async function poll() {
+      try {
+        const [ps, js, hs] = await Promise.all([api.listPrinters(), api.listJobs(), api.listHistory()])
+        if (!active) return
+        setPrinters((prev) => (JSON.stringify(prev) === JSON.stringify(ps) ? prev : ps))
+        setJobs((prev) => (JSON.stringify(prev) === JSON.stringify(js) ? prev : js))
+        setHistory((prev) => (JSON.stringify(prev) === JSON.stringify(hs) ? prev : hs))
+        setConnected(true)
+
+        // If there's an active printing job, poll faster (800ms) for smooth progress
+        const isPrinting = js.some((j) => j.status === 'printing' || j.status === 'queued')
+        const nextInterval = isPrinting ? 800 : 2500
+        timer = setTimeout(poll, nextInterval)
+      } catch {
+        if (!active) return
+        setConnected(false)
+        timer = setTimeout(poll, 3000)
+      }
+    }
+    poll()
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [])
+
+  // ── Toast helper (re-export with defaults) ──
+
+  // ── Printer actions ──
+  const refreshPrinter = useCallback(async (id) => {
+    const p = await api.refreshPrinter(id)
+    setPrinters((list) => list.map((x) => (x.id === id ? p : x)))
+    toast(`Refreshed ${p.name} status`, 'info')
+  }, [toast])
+
+  const refreshAll = useCallback(async () => {
+    const ps = await api.listPrinters()
+    setPrinters(ps)
+    toast('All printer statuses refreshed', 'info')
+  }, [toast])
+
+  const addPrinter = useCallback(async (printer) => {
+    const created = await api.addPrinter(printer)
+    setPrinters((list) => [...list, created])
+    toast('Printer added', 'success')
+    return created
+  }, [toast])
+
+  const removePrinter = useCallback(async (id) => {
+    const p = printers.find((x) => x.id === id)
+    await api.deletePrinter(id)
+    setPrinters((list) => list.filter((x) => x.id !== id))
+    toast(`Removed ${p?.name || 'printer'}`, 'info')
+  }, [printers, toast])
+
+  const renamePrinter = useCallback(async (id, name) => {
+    const p = await api.renamePrinter(id, name)
+    setPrinters((list) => list.map((x) => (x.id === id ? p : x)))
+    toast('Printer renamed', 'success')
+  }, [toast])
+
+  const setDefaultPrinter = useCallback(async (id) => {
+    const p = await api.setDefaultPrinter(id)
+    setPrinters((list) => list.map((x) => (x.id === id ? p : { ...x, isDefault: false })))
+    toast('Default printer updated', 'success')
+  }, [toast])
+
+  const togglePrinterEnable = useCallback(async (id) => {
+    const p = printers.find((x) => x.id === id)
+    const updated = p?.enabled ? await api.disablePrinter(id) : await api.enablePrinter(id)
+    setPrinters((list) => list.map((x) => (x.id === id ? updated : x)))
+    toast(`${updated.name} ${updated.enabled ? 'enabled' : 'disabled'}`, 'info')
+  }, [printers, toast])
+
+  const togglePrinterPause = useCallback(async (id) => {
+    const p = printers.find((x) => x.id === id)
+    const updated = p?.paused ? await api.resumePrinter(id) : await api.pausePrinter(id)
+    setPrinters((list) => list.map((x) => (x.id === id ? updated : x)))
+    toast(`${updated.name} ${updated.paused ? 'paused' : 'resumed'}`, 'info')
+  }, [printers, toast])
+
+  const testPrint = useCallback(async (id) => {
+    const p = printers.find((x) => x.id === id)
+    try {
+      const res = await api.testPrint(id)
+      if (res?.ok) {
+        toast(`Ping OK: ${p?.name || 'Printer'} is Online (${res.latencyMs}ms) · ${res.message || 'Ready'}`, 'success')
+      } else {
+        toast(`Ping failed: ${res?.message || 'Device unreachable'}`, 'error')
+      }
+      if (res?.status) {
+        setPrinters((list) => list.map((x) => (x.id === id ? { ...x, status: res.status } : x)))
+      }
+    } catch (e) {
+      toast(`Ping failed: ${e.message}`, 'error')
+    }
+  }, [printers, toast])
+
+  // ── Discovery ──
+  const scanForPrinters = useCallback(async () => {
+    const res = await api.scan()
+    return res.devices || []
+  }, [])
+
+  const addDiscovered = useCallback(async (id) => {
+    const created = await api.addDiscovered(id)
+    setPrinters((list) => [...list, created])
+    toast(`Added ${created.name}`, 'success')
+    return created
+  }, [toast])
+
+  // ── Job actions ──
+  const submitJob = useCallback(async (payload, file) => {
+    const job = await api.createJob(payload, file)
+    setJobs((list) => [job, ...list])
+    const printer = printers.find((p) => p.id === payload.printerId)
+    toast(`Job added to ${printer?.name || 'printer'} queue`, 'success')
+    return job
+  }, [printers, toast])
+
+  const cancelJob = useCallback(async (id) => {
+    const j = await api.cancelJob(id)
+    setJobs((list) => list.map((x) => (x.id === id ? j : x)))
+    toast(`Cancelled ${j.name}`, 'info')
+  }, [toast])
+
+  const pauseJob = useCallback(async (id) => {
+    const j = await api.pauseJob(id)
+    setJobs((list) => list.map((x) => (x.id === id ? j : x)))
+    toast('Job paused', 'info')
+  }, [toast])
+
+  const resumeJob = useCallback(async (id) => {
+    const j = await api.resumeJob(id)
+    setJobs((list) => list.map((x) => (x.id === id ? j : x)))
+    toast('Job resumed', 'info')
+  }, [toast])
+
+  const retryJob = useCallback(async (id) => {
+    const job = await api.retryJob(id)
+    setJobs((list) => [job, ...list])
+    toast('Job retried — added to queue', 'success')
+  }, [toast])
+
+  const reorderQueue = useCallback(async (dragId, targetId) => {
+    setJobs((list) => {
+      const drag = list.find((j) => j.id === dragId)
+      const target = list.find((j) => j.id === targetId)
+      if (!drag || !target) return list
+      const next = list.filter((j) => j.id !== dragId)
+      const idx = next.findIndex((j) => j.id === targetId)
+      next.splice(idx, 0, drag)
+      return next
+    })
+    // persist order
+    const ids = jobs.map((j) => j.id)
+    if (ids.length) {
+      api.reorderJobs(ids).catch(() => {})
+    }
+    toast('Queue reordered', 'info')
+  }, [jobs, toast])
+
+  const setJobPriority = useCallback(async (id, priority) => {
+    const j = await api.setJobPriority(id, priority)
+    setJobs((list) => list.map((x) => (x.id === id ? j : x)))
+  }, [])
+
+  const clearQueue = useCallback(async () => {
+    // completed/failed/cancelled jobs are already moved server-side;
+    // simply refresh the list
+    const js = await api.listJobs()
+    setJobs(js)
+    toast('Queue refreshed', 'info')
+  }, [toast])
+
+  const clearHistory = useCallback(async () => {
+    await api.clearHistory()
+    setHistory([])
+    toast('History cleared', 'info')
+  }, [toast])
+
+  // ── Settings ──
+  const updateSettings = useCallback(async (next) => {
+    setSettings(next)
+    await api.putSettings(next).catch(() => {})
+  }, [])
+
+  // ── Derived ──
+  const defaultPrinter = useMemo(() => printers.find((p) => p.isDefault) || printers[0], [printers])
+  const activeCount = useMemo(() => printers.filter((p) => p.status === 'online' && p.enabled).length, [printers])
+  const queueCount = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused'].includes(j.status)).length, [jobs])
+
+  const value = useMemo(
+    () => ({
+      printers, jobs, history, settings, selectedFile, setSelectedFile, toasts, toast,
+      loading, connected, backendInfo,
+      // printers
+      refreshPrinter, refreshAll, addPrinter, removePrinter, renamePrinter,
+      setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
+      // discovery
+      scanForPrinters, addDiscovered,
+      // jobs
+      submitJob, cancelJob, pauseJob, resumeJob, retryJob, reorderQueue, setJobPriority, clearQueue,
+      // history & settings
+      clearHistory, updateSettings,
+      // derived
+      defaultPrinter, activeCount, queueCount,
+    }),
+    [
+      printers, jobs, history, settings, selectedFile, toasts, toast, loading, connected, backendInfo,
+      refreshPrinter, refreshAll, addPrinter, removePrinter, renamePrinter,
+      setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
+      scanForPrinters, addDiscovered, submitJob, cancelJob, pauseJob, resumeJob, retryJob,
+      reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings,
+      defaultPrinter, activeCount, queueCount,
+    ]
+  )
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>
+}

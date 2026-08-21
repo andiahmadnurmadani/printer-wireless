@@ -1,0 +1,121 @@
+@import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=Geist+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-vanilla-100: #fafafa;
+  --color-vanilla-200: #f6f2ee;
+  --color-vanilla-300: #e5ded5;
+  --color-dark-black-900: #383838;
+  --color-lime-300: #f4ffc9;
+  --color-lime-400: #d9ff6b;
+  --color-lime-500: #e9ff91;
+  --color-sky-blue-100: #ceebff;
+  --color-sky-blue-300: #97d4ff;
+  --color-sky-blue-500: #058bff;
+  --color-surface-gray-100: #f3f3f3;
+  --color-surface-gray-300: #dad8d7;
+  --color-dark-gray-600: #58534f;
+  --color-ok-500: #2f9e5f;
+  --color-ok-100: #d8f5e3;
+  --color-err-500: #e5484d;
+  --color-err-100: #fde3e3;
+  --color-warn-500: #e8a013;
+  --color-warn-100: #fdeecd;
+  --color-watermelon-500: #fd7876;
+  --color-lavender-300: #b095fa;
+
+  --font-figtree: "Figtree", "Figtree Fallback", sans-serif;
+  --font-geist: "Geist Mono", "Geist Mono Fallback", monospace;
+
+  --radius-4xl: 2rem;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-vanilla-200);
+  color: var(--color-dark-black-900);
+  font-family: var(--font-figtree);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- KroomPrint noise background (same as Bugster) ---- */
+.bg-kroom-noise {
+  background-color: var(--color-vanilla-200);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1962' height='1273'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='2 2' numOctaves='3' stitchTiles='stitch' seed='1949'/%3E%3CfeColorMatrix type='luminanceToAlpha'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='discrete' tableValues='1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeFlood flood-color='rgba(0,0,0,0.12)'/%3E%3CfeComposite operator='in' in2='coloredNoise'/%3E%3C/filter%3E%3Crect width='1962' height='1273' fill='%23F6F2EE'/%3E%3Crect width='1962' height='1273' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: cover;
+  background-position: center;
+}
+
+/* ---- Decorative animated squares ---- */
+@keyframes sq-loop {
+  0%, 100% { transform: translate(0, 0); }
+  25% { transform: translate(0, -60%); }
+  50% { transform: translate(0, -60%); }
+  75% { transform: translate(0, 0); }
+}
+.sq-anim-loop {
+  animation: sq-loop 8s ease-in-out infinite;
+  animation-delay: 1s;
+}
+
+/* ---- Toast slide-in ---- */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.toast-in { animation: toast-in 0.25s ease-out; }
+
+/* ---- Modal pop ---- */
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-in { animation: modal-in 0.22s ease-out; }
+
+/* ---- Progress stripes for printing ---- */
+@keyframes stripes-move {
+  0% { background-position: 0 0; }
+  100% { background-position: 24px 0; }
+}
+.progress-stripes {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.25) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.25) 50%,
+    rgba(255, 255, 255, 0.25) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 24px 24px;
+  animation: stripes-move 0.8s linear infinite;
+}
+
+/* ---- Blinking cursor for typing simulation ---- */
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.blink { animation: blink 1s step-start infinite; }
+
+/* ---- Font utilities ---- */
+.font-figtree { font-family: var(--font-figtree); }
+.font-geist { font-family: var(--font-geist); }
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-dark-black-900); border-radius: 8px; border: 2px solid var(--color-vanilla-200); }
+::-webkit-scrollbar-thumb:hover { background: #000; }
+
+/* ---- Selection ---- */
+::selection { background: var(--color-lime-300); color: var(--color-dark-black-900); }
+
+/* ---- Focus rings (accessibility) ---- */
+*:focus-visible {
+  outline: 2px solid var(--color-dark-black-900);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

@@ -217,39 +217,42 @@ export default function PrintPage({ onNavigate }) {
     setFile(f)
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!file) {
       toast('Please add a document first', 'error')
       return
     }
     if (submitting) return
     setSubmitting(true)
-    try {
-      await submitJob({
-        fileType: file.name.split('.').pop()?.toUpperCase() || 'PDF',
-        pages: pageCount,
-        copies,
-        color: effColor,
-        duplex: duplex && canDuplex,
-        paperSize: effectivePaper,
-        orientation: effectiveOrient,
-        quality: effectiveQuality,
-        scaling: effectiveScaling,
-        pageRange: range,
-        priority: 3,
-        printerId: selectedPrinter?.id || printerId,
-        size: file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`,
-      }, file)
-      setFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      if (onNavigate) {
-        onNavigate('queue')
-      }
-    } catch (e) {
-      toast(e.message, 'error')
-    } finally {
-      setSubmitting(false)
+
+    // Capture all values before clearing state
+    const capturedFile = file
+    const jobPayload = {
+      fileType: file.name.split('.').pop()?.toUpperCase() || 'PDF',
+      pages: pageCount,
+      copies,
+      color: effColor,
+      duplex: duplex && canDuplex,
+      paperSize: effectivePaper,
+      orientation: effectiveOrient,
+      quality: effectiveQuality,
+      scaling: effectiveScaling,
+      pageRange: range,
+      priority: 3,
+      printerId: selectedPrinter?.id || printerId,
+      size: file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`,
     }
+
+    // Optimistic reset + navigate BEFORE the network call — feels instant
+    setFile(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    setSubmitting(false)
+    if (onNavigate) onNavigate('queue')
+
+    // Upload and CUPS spooling run in background
+    submitJob(jobPayload, capturedFile).catch((e) => {
+      toast(`Gagal kirim ke printer: ${e.message}`, 'error')
+    })
   }
 
   return (

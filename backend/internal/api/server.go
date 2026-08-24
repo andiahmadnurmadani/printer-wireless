@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"kroomprint/backend/internal/config"
@@ -19,14 +21,22 @@ import (
 	"kroomprint/backend/internal/store"
 )
 
+// previewCacheEntry holds a cached LibreOffice/ImageMagick PDF conversion result.
+type previewCacheEntry struct {
+	path    string
+	expires time.Time
+}
+
 // Server holds handlers and dependencies.
 type Server struct {
-	cfg       *config.Config
-	store     *store.Store
-	scanner   *discovery.Scanner
-	log       *log.Logger
-	scanMu    chan struct{} // serializes scans
-	scanState scanState
+	cfg          *config.Config
+	store        *store.Store
+	scanner      *discovery.Scanner
+	log          *log.Logger
+	scanMu       chan struct{} // serializes scans
+	scanState    scanState
+	previewCache map[string]previewCacheEntry // hash → cached PDF path
+	previewMu    sync.Mutex
 }
 
 type scanState struct {
@@ -36,14 +46,38 @@ type scanState struct {
 
 // New builds the API server.
 func New(cfg *config.Config, st *store.Store, logger *log.Logger) *Server {
-	return &Server{
-		cfg:     cfg,
-		store:   st,
-		scanner: &discovery.Scanner{CUPSURL: cfg.CUPSURL, CUPSSSH: cfg.CUPSSSH, Delay: time.Duration(cfg.DiscoveryDelayMS) * time.Millisecond, Log: logger},
-		log:     logger,
-		scanMu:  make(chan struct{}, 1),
+	s := &Server{
+		cfg:          cfg,
+		store:        st,
+		scanner:      &discovery.Scanner{CUPSURL: cfg.CUPSURL, CUPSSSH: cfg.CUPSSSH, Delay: time.Duration(cfg.DiscoveryDelayMS) * time.Millisecond, Log: logger},
+		log:          logger,
+		scanMu:       make(chan struct{}, 1),
+		previewCache: make(map[string]previewCacheEntry),
+	}
+	// Evict stale cache entries every 10 minutes
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			s.evictPreviewCache()
+		}
+	}()
+	return s
+}
+
+// evictPreviewCache removes expired preview cache entries and their temp files.
+func (s *Server) evictPreviewCache() {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	now := time.Now()
+	for k, e := range s.previewCache {
+		if now.After(e.expires) {
+			_ = os.Remove(e.path)
+			delete(s.previewCache, k)
+		}
 	}
 }
+
 
 // StartCupsPoller begins a background loop that syncs job status with the
 // real CUPS server. Only meaningful when CUPS is configured (ssh:// or http://).
@@ -1284,12 +1318,13 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 			flags = append(flags, "-o", "sides="+opts.Sides)
 		}
 		if !req.Color {
-			// CRITICAL FOR EPSON L3210 & MONOCHROME:
-			// 1) Ink=MONO activates dedicated Black printhead nozzle on Epson ESC/P-R
-			// 2) print-color-mode=monochrome & ColorModel=Gray for generic filters
-			flags = append(flags, "-o", "Ink=MONO", "-o", "print-color-mode=monochrome", "-o", "ColorModel=Gray")
+			// CRITICAL FOR EPSON L3210 ESC/P-R MONOCHROME FIX:
+			// ONLY use Ink=MONO — this activates the dedicated black printhead nozzle.
+			// DO NOT add print-color-mode=monochrome or ColorModel=Gray: those force a
+			// 1-channel raster that the Epson ESC/P-R filter cannot decode → blank pages.
+			flags = append(flags, "-o", "Ink=MONO")
 		} else {
-			flags = append(flags, "-o", "Ink=COLOR", "-o", "print-color-mode=color", "-o", "ColorModel=RGB")
+			flags = append(flags, "-o", "Ink=COLOR")
 		}
 		if req.Quality == "High" || req.Quality == "Photo" {
 			flags = append(flags, "-o", "MediaType=PLAIN_HIGH")
@@ -1747,7 +1782,8 @@ func randN(n int) int {
 	return time.Now().Nanosecond() % n
 }
 
-// handleConvertPreview converts an uploaded Office doc/image to high-res PDF on-the-fly for real-time UI preview
+// handleConvertPreview converts an uploaded Office doc/image to PDF for real-time UI preview.
+// Results are cached by MD5 hash for 30 minutes — repeat uploads of the same file are instant.
 func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeErr(w, 400, "invalid form data")
@@ -1761,52 +1797,95 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	ext := strings.ToLower(filepath.Ext(header.Filename))
-	tmpInput := filepath.Join("/tmp", fmt.Sprintf("kp-prev-%d-%s", time.Now().UnixNano(), sanitizeFilename(header.Filename)))
-	outF, err := os.Create(tmpInput)
+	// Read all bytes so we can hash them for caching
+	data, err := io.ReadAll(file)
 	if err != nil {
-		writeErr(w, 500, "cannot create temporary file")
+		writeErr(w, 500, "cannot read uploaded file")
 		return
 	}
-	if _, err := io.Copy(outF, file); err != nil {
-		outF.Close()
-		_ = os.Remove(tmpInput)
-		writeErr(w, 500, "cannot write temporary file")
-		return
-	}
-	outF.Close()
-	defer os.Remove(tmpInput)
 
-	// 1) If already a PDF, serve directly
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+
+	// 1) If already a PDF, serve directly without temp file dance
 	if ext == ".pdf" {
 		w.Header().Set("Content-Type", "application/pdf")
 		w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
-		http.ServeFile(w, r, tmpInput)
+		w.Header().Set("Cache-Control", "private, max-age=1800")
+		w.WriteHeader(200)
+		_, _ = w.Write(data)
 		return
 	}
 
-	// 2) If image: convert to PDF using ImageMagick convert
+	// 2) Check in-process preview cache (avoids repeat LibreOffice invocations)
+	hash := fmt.Sprintf("%x", md5.Sum(data))
+	cacheKey := hash + ext
+
+	s.previewMu.Lock()
+	if entry, ok := s.previewCache[cacheKey]; ok && time.Now().Before(entry.expires) {
+		cachedPath := entry.path
+		s.previewMu.Unlock()
+		if fi, err := os.Stat(cachedPath); err == nil && fi.Size() > 0 {
+			if s.log != nil {
+				s.log.Printf("preview cache HIT: %s (%s, %d bytes)", header.Filename, cacheKey[:8], fi.Size())
+			}
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
+			w.Header().Set("X-Cache", "HIT")
+			w.Header().Set("Cache-Control", "private, max-age=1800")
+			http.ServeFile(w, r, cachedPath)
+			return
+		}
+		// Cached file was deleted externally — remove stale entry
+		s.previewMu.Lock()
+		delete(s.previewCache, cacheKey)
+	}
+	s.previewMu.Unlock()
+
+	// 3) Write to temp input file
+	tmpInput := filepath.Join("/tmp", fmt.Sprintf("kp-prev-%s-%s", hash[:8], sanitizeFilename(header.Filename)))
+	if err := os.WriteFile(tmpInput, data, 0o644); err != nil {
+		writeErr(w, 500, "cannot create temporary file")
+		return
+	}
+	defer os.Remove(tmpInput)
+
+	serveAndCache := func(pdfPath string) {
+		if fi, err := os.Stat(pdfPath); err == nil && fi.Size() > 0 {
+			// Persist to stable cache path
+			cachePath := filepath.Join("/tmp", fmt.Sprintf("kp-cached-%s.pdf", cacheKey[:16]))
+			_ = os.Rename(pdfPath, cachePath)
+			s.previewMu.Lock()
+			s.previewCache[cacheKey] = previewCacheEntry{path: cachePath, expires: time.Now().Add(30 * time.Minute)}
+			s.previewMu.Unlock()
+			if s.log != nil {
+				s.log.Printf("preview cache STORE: %s → %s", header.Filename, cacheKey[:8])
+			}
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
+			w.Header().Set("X-Cache", "MISS")
+			w.Header().Set("Cache-Control", "private, max-age=1800")
+			http.ServeFile(w, r, cachePath)
+		}
+	}
+
+	// 4) Image → PDF via ImageMagick
 	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
 	if isImage {
 		tmpPDF := tmpInput + ".pdf"
-		defer os.Remove(tmpPDF)
 		if conv, err := exec.LookPath("convert"); err == nil {
 			cmd := exec.Command(conv, "-density", "150", tmpInput, "-background", "white", "-flatten", "-alpha", "off", "-page", "A4", tmpPDF)
 			if out, err := cmd.CombinedOutput(); err == nil {
-				if fi, err := os.Stat(tmpPDF); err == nil && fi.Size() > 0 {
-					w.Header().Set("Content-Type", "application/pdf")
-					w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
-					http.ServeFile(w, r, tmpPDF)
-					return
-				}
+				serveAndCache(tmpPDF)
+				return
 			} else if s.log != nil {
-				s.log.Printf("preview image convert error: %v (%s)", err, string(out))
+				s.log.Printf("preview image convert error: %v (%s)", err, strings.TrimSpace(string(out)))
 			}
 		}
 	}
 
-	// 3) If Office Doc: convert using headless LibreOffice
-	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" || ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" || ext == ".txt" || ext == ".csv"
+	// 5) Office doc → PDF via headless LibreOffice
+	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" ||
+		ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" || ext == ".txt" || ext == ".csv"
 	if isDoc {
 		loCmd := ""
 		if p, err := exec.LookPath("libreoffice"); err == nil {
@@ -1818,18 +1897,14 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", "/tmp", tmpInput)
 			if out, err := cmd.CombinedOutput(); err == nil {
 				tmpPDF := strings.TrimSuffix(tmpInput, ext) + ".pdf"
-				defer os.Remove(tmpPDF)
-				if fi, err := os.Stat(tmpPDF); err == nil && fi.Size() > 0 {
-					w.Header().Set("Content-Type", "application/pdf")
-					w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
-					http.ServeFile(w, r, tmpPDF)
-					return
-				}
+				serveAndCache(tmpPDF)
+				return
 			} else if s.log != nil {
-				s.log.Printf("preview libreoffice error: %v (%s)", err, string(out))
+				s.log.Printf("preview libreoffice error: %v (%s)", err, strings.TrimSpace(string(out)))
 			}
 		}
 	}
 
 	writeErr(w, 415, "cannot convert this file format to visual preview")
 }
+

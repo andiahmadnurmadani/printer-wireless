@@ -174,15 +174,41 @@ export function AppProvider({ children }) {
 
   // ── Job actions ──
   const submitJob = useCallback(async (payload, file) => {
-    const job = await api.createJob(payload, file)
-    setJobs((list) => [job, ...list])
-    const printer = printers.find((p) => p.id === payload.printerId)
-    if (job?.status === 'failed') {
-      toast(`Gagal mencetak: ${job.error || 'Format dokumen atau printer bermasalah'}`, 'error')
-    } else {
-      toast(`Job added to ${printer?.name || 'printer'} queue`, 'success')
+    // Add an optimistic placeholder immediately so the queue page shows something at once
+    const optimisticId = `opt-${Date.now()}`
+    const optimisticJob = {
+      id: optimisticId,
+      name: file?.name || 'Dokumen',
+      fileType: payload.fileType || 'PDF',
+      pages: payload.pages || 1,
+      copies: payload.copies || 1,
+      color: payload.color || false,
+      paperSize: payload.paperSize || 'A4',
+      status: 'queued',
+      progress: 0,
+      size: payload.size || '',
+      createdAt: new Date().toISOString(),
+      printerName: printers.find((p) => p.id === payload.printerId)?.name || '',
+      _optimistic: true,
     }
-    return job
+    setJobs((list) => [optimisticJob, ...list])
+
+    try {
+      const job = await api.createJob(payload, file)
+      // Replace optimistic placeholder with real job from backend
+      setJobs((list) => [job, ...list.filter((j) => j.id !== optimisticId)])
+      const printer = printers.find((p) => p.id === payload.printerId)
+      if (job?.status === 'failed') {
+        toast(`Gagal mencetak: ${job.error || 'Format dokumen atau printer bermasalah'}`, 'error')
+      } else {
+        toast(`Job ditambahkan ke antrean ${printer?.name || 'printer'}`, 'success')
+      }
+      return job
+    } catch (e) {
+      // Remove the optimistic placeholder on failure
+      setJobs((list) => list.filter((j) => j.id !== optimisticId))
+      throw e
+    }
   }, [printers, toast])
 
   const cancelJob = useCallback(async (id) => {

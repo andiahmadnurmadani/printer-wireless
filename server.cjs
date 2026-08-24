@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = parseInt(process.env.PORT || '5174', 10);
-const DIST_DIR = path.resolve(__dirname, 'dist');
+// dist/ is built by amba (Node v20 via nvm) directly on the NAS mount, so amba owns the files.
+// If you see 404, run: npm run build  (on amba, with Node 20 in PATH)
+const DIST_DIR = process.env.DIST_DIR || '/mnt/web/Nouvem/printer-wireless/dist';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -23,7 +25,6 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
 
@@ -36,7 +37,6 @@ const server = http.createServer((req, res) => {
   let reqPath = decodeURIComponent(req.url.split('?')[0]);
   let filePath = path.join(DIST_DIR, reqPath);
 
-  // Security check: prevent directory traversal
   if (!filePath.startsWith(DIST_DIR)) {
     res.writeHead(403);
     res.end('Forbidden');
@@ -50,11 +50,10 @@ const server = http.createServer((req, res) => {
 
     fs.readFile(filePath, (readErr, data) => {
       if (readErr) {
-        // SPA Fallback: serve index.html
         fs.readFile(path.join(DIST_DIR, 'index.html'), (spaErr, spaData) => {
           if (spaErr) {
             res.writeHead(404, { 'Content-Type': 'text/plain' });
-            res.end('404 Not Found');
+            res.end('404 Not Found — dist not built or not copied to ' + DIST_DIR);
           } else {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(spaData);
@@ -72,5 +71,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`KroomPrint Web running on http://0.0.0.0:${PORT}`);
+  console.log('KroomPrint Web running on http://0.0.0.0:' + PORT + ' (dist: ' + DIST_DIR + ')');
 });

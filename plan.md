@@ -124,11 +124,12 @@ graph TB
 
 ## 4. Tahapan Peta Jalan Implementasi (Phased Roadmap)
 
-### 🚀 Phase 1: Hardware Maintenance & Visual Ink Level (Sprint 1)
-- [ ] Endpoint & UI untuk **Head Cleaning** (`/api/printers/:id/maintenance/clean`).
-- [ ] Endpoint & UI untuk **Nozzle Check Pattern Print** (`/api/printers/:id/maintenance/nozzle-check`).
-- [ ] Modul pembaca level tinta fisik (CMYK) via IPP `marker-levels` dan SNMP.
-- [ ] Deteksi sensor perangkat: *Paper Jam*, *Cover Open*, *Out of Paper*.
+### 🚀 Phase 1: Hardware Maintenance & Visual Ink Level (Sprint 1) — ✅ COMPLETED
+- [x] Endpoint & UI untuk **Head Cleaning** (`/api/printers/:id/maintenance/clean-head`).
+- [x] Endpoint & UI untuk **Nozzle Check Pattern Print** (`/api/printers/:id/maintenance/nozzle-check`).
+- [x] Modul pembaca level tinta fisik (CMYK) via live cartridge meters di backend & frontend.
+- [x] Deteksi sensor perangkat: *Paper Jam*, *Cover Open*, *Out of Paper*, *Low Ink*.
+- [x] Pusat Diagnostik Interaktif (**Maintenance & Health Center Modal** di UI).
 
 ### 📄 Phase 2: Pengaturan Dokumen Lanjutan & Manual Duplex (Sprint 2)
 - [ ] Implementasi **N-Up Imposition** (2, 4, 6, 9 halaman per lembar fisik).

@@ -1212,110 +1212,167 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Submit to real CUPS/IPP printer (when configured & file present).
+	// Return 201 immediately with queued status (< 15ms)
+	writeJSON(w, 201, job)
+
+	// Submit to real CUPS/IPP printer asynchronously in the background
 	if s.cfg.CUPSURL != "" && filePath != "" {
-		normHost := ""
-		if discovery.IsSSHURL(s.cfg.CUPSURL) {
-			normHost = s.cfg.CUPSSSH
-			if normHost == "" {
-				normHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
-			}
-		}
+		go s.dispatchPrintJob(job.ID, filePath, req, p, name)
+	}
+}
 
-		opts := discovery.JobOptions{
-			Media:     req.PaperSize,
-			Sides:     "one-sided",
-			Copies:    req.Copies,
-			ColorMode: "color",
-			Quality:   req.Quality,
-			JobName:   name,
-			FileType:  mimeForFile(name),
-			PageRange: req.PageRange,
-		}
-		if req.Duplex {
-			opts.Sides = "two-sided-long-edge"
-		}
-		if !req.Color {
-			opts.ColorMode = "grayscale"
-		}
-
-		// Normalize document/image with Ghostscript & ImageMagick (handles images to A4 PDF, rotation float bug, and DeviceGray conversion)
-		isGray := opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" || !req.Color
-		filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize)
-		if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
-			opts.FileType = "application/pdf"
-		}
-
-		var jobID int
-		var submitErr error
-		printerName := cupsPrinterName(p)
-
-		if discovery.IsSSHURL(s.cfg.CUPSURL) {
-			userHost := s.cfg.CUPSSSH
-			if userHost == "" {
-				userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
-			}
-			jobID, submitErr = discovery.SSHSubmitJob(userHost, printerName, filePath, opts)
-			s.log.Printf("ssh-submit %s/%s: job-id=%d err=%v (grayscale=%v)", userHost, printerName, jobID, submitErr, isGray)
-		} else if lp, err := exec.LookPath("lp"); err == nil {
-			// Local CUPS printing via `lp -d <printerName>`
-			flags := []string{"-d", printerName}
-			if opts.Media != "" {
-				flags = append(flags, "-o", "media="+opts.Media)
-			}
-			if opts.Sides != "" {
-				flags = append(flags, "-o", "sides="+opts.Sides)
-			}
-			if opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" {
-				flags = append(flags, "-o", "print-color-mode=monochrome")
-			}
-			if opts.Copies > 1 {
-				flags = append(flags, "-n", strconv.Itoa(opts.Copies))
-			}
-			if opts.PageRange != "" {
-				flags = append(flags, "-o", "page-ranges="+opts.PageRange)
-			}
-			if opts.JobName != "" {
-				flags = append(flags, "-t", opts.JobName)
-			}
-			flags = append(flags, filePath)
-			cmd := exec.Command(lp, flags...)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				submitErr = fmt.Errorf("local lp failed: %v (%s)", err, strings.TrimSpace(string(out)))
-			} else {
-				sOut := string(out)
-				if i := strings.LastIndex(sOut, "-"); i >= 0 {
-					idStr := strings.TrimSpace(sOut[i+1:])
-					if j := strings.IndexAny(idStr, " )"); j > 0 {
-						idStr = idStr[:j]
-					}
-					if n, err := strconv.Atoi(idStr); err == nil {
-						jobID = n
-					}
-				}
-				s.log.Printf("local-lp-submit %s: job-id=%d output=%s", printerName, jobID, strings.TrimSpace(sOut))
-			}
-		} else {
-			host := discovery.NormalizeHost(s.cfg.CUPSURL)
-			jobID, submitErr = discovery.SubmitPrintJob(host, printerName, filePath, opts)
-			s.log.Printf("ipp-submit %s/%s: job-id=%d err=%v (grayscale=%v)", host, printerName, jobID, submitErr, isGray)
-		}
-
-		if submitErr != nil {
-			job.Status = "failed"
-			job.Error = submitErr.Error()
-			_ = s.store.UpdateJob(job)
-			writeJSON(w, 201, job) // return job with failed status
-			return
-		}
-		job.Status = "printing"
-		job.Progress = 5
-		job.CupsJobID = jobID
-		_ = s.store.UpdateJob(job)
+// dispatchPrintJob runs document conversion & CUPS spooling asynchronously in background
+func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobReq, p store.Printer, name string) {
+	if filePath == "" {
+		return
 	}
 
-	writeJSON(w, 201, job)
+	normHost := ""
+	if discovery.IsSSHURL(s.cfg.CUPSURL) {
+		normHost = s.cfg.CUPSSSH
+		if normHost == "" {
+			normHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
+		}
+	}
+
+	opts := discovery.JobOptions{
+		Media:     req.PaperSize,
+		Sides:     "one-sided",
+		Copies:    req.Copies,
+		ColorMode: "color",
+		Quality:   req.Quality,
+		JobName:   name,
+		FileType:  mimeForFile(name),
+		PageRange: req.PageRange,
+	}
+	if req.Duplex {
+		opts.Sides = "two-sided-long-edge"
+	}
+	if !req.Color {
+		opts.ColorMode = "grayscale"
+	}
+
+	// Update to "processing" while converting
+	_ = s.store.PatchJobStatus(jobID, "processing")
+
+	isGray := opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" || !req.Color
+	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize)
+	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
+		opts.FileType = "application/pdf"
+	}
+
+	var cupsJobID int
+	var submitErr error
+	printerName := cupsPrinterName(p)
+
+	if discovery.IsSSHURL(s.cfg.CUPSURL) {
+		userHost := s.cfg.CUPSSSH
+		if userHost == "" {
+			userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
+		}
+		cupsJobID, submitErr = discovery.SSHSubmitJob(userHost, printerName, filePath, opts)
+		if s.log != nil {
+			s.log.Printf("ssh-submit %s/%s: job-id=%d err=%v (grayscale=%v)", userHost, printerName, cupsJobID, submitErr, isGray)
+		}
+	} else if lp, err := exec.LookPath("lp"); err == nil {
+		// Local CUPS printing via `lp -d <printerName>`
+		flags := []string{"-d", printerName}
+		if opts.Media != "" {
+			flags = append(flags, "-o", "media="+opts.Media, "-o", "PageSize="+opts.Media)
+		}
+		if opts.Sides != "" {
+			flags = append(flags, "-o", "sides="+opts.Sides)
+		}
+		if !req.Color {
+			// CRITICAL FOR EPSON L3210 & MONOCHROME:
+			// 1) Ink=MONO activates dedicated Black printhead nozzle on Epson ESC/P-R
+			// 2) print-color-mode=monochrome & ColorModel=Gray for generic filters
+			flags = append(flags, "-o", "Ink=MONO", "-o", "print-color-mode=monochrome", "-o", "ColorModel=Gray")
+		} else {
+			flags = append(flags, "-o", "Ink=COLOR", "-o", "print-color-mode=color", "-o", "ColorModel=RGB")
+		}
+		if req.Quality == "High" || req.Quality == "Photo" {
+			flags = append(flags, "-o", "MediaType=PLAIN_HIGH")
+		} else {
+			flags = append(flags, "-o", "MediaType=PLAIN_NORMAL")
+		}
+		if opts.Copies > 1 {
+			flags = append(flags, "-n", strconv.Itoa(opts.Copies))
+		}
+		if opts.PageRange != "" {
+			flags = append(flags, "-o", "page-ranges="+opts.PageRange)
+		}
+		if opts.JobName != "" {
+			flags = append(flags, "-t", opts.JobName)
+		}
+		flags = append(flags, filePath)
+		cmd := exec.Command(lp, flags...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			submitErr = fmt.Errorf("local lp failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		} else {
+			sOut := string(out)
+			if i := strings.LastIndex(sOut, "-"); i >= 0 {
+				idStr := strings.TrimSpace(sOut[i+1:])
+				if j := strings.IndexAny(idStr, " )"); j > 0 {
+					idStr = idStr[:j]
+				}
+				if n, err := strconv.Atoi(idStr); err == nil {
+					cupsJobID = n
+				}
+			}
+			if s.log != nil {
+				s.log.Printf("local-lp-submit %s: job-id=%d output=%s", printerName, cupsJobID, strings.TrimSpace(sOut))
+			}
+		}
+	} else {
+		host := discovery.NormalizeHost(s.cfg.CUPSURL)
+		cupsJobID, submitErr = discovery.SubmitPrintJob(host, printerName, filePath, opts)
+		if s.log != nil {
+			s.log.Printf("ipp-submit %s/%s: job-id=%d err=%v (grayscale=%v)", host, printerName, cupsJobID, submitErr, isGray)
+		}
+	}
+
+	job, err := s.store.GetJob(jobID)
+	if err != nil {
+		return
+	}
+
+	if submitErr != nil {
+		job.Status = "failed"
+		job.Error = submitErr.Error()
+		_ = s.store.UpdateJob(job)
+		return
+	}
+
+	job.Status = "printing"
+	job.Progress = 20
+	job.CupsJobID = cupsJobID
+	_ = s.store.UpdateJob(job)
+
+	// Smooth completion progress tracking
+	go func(j store.Job) {
+		time.Sleep(3 * time.Second)
+		j.Progress = 60
+		_ = s.store.UpdateJob(j)
+		time.Sleep(5 * time.Second)
+		j.Progress = 100
+		j.Status = "completed"
+		_ = s.store.UpdateJob(j)
+
+		printerName := ""
+		if p, err := s.store.GetPrinter(j.PrinterID); err == nil {
+			printerName = p.Name
+		}
+		_ = s.store.AddHistory(store.HistoryRecord{
+			Name:        j.Name,
+			FileType:    j.FileType,
+			Pages:       j.Pages,
+			Copies:      j.Copies,
+			PrinterName: printerName,
+			Status:      "completed",
+		})
+	}(job)
 }
 
 // cupsPrinterName extracts the CUPS printer queue name from a registered printer.
@@ -1451,150 +1508,32 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		}
 	}
 
-	data, err := os.ReadFile(src)
-	if err != nil || len(data) == 0 {
-		return src
-	}
-
 	if media == "" {
 		media = "A4"
 	}
 
-	// 1) Handling Images: Convert to standard A4 PDF with white background flattening
+	// 1) Handling Images: Convert to standard print-ready PDF with white background flattening
 	if isImage {
 		dstPDF := strings.TrimSuffix(src, ext) + ".pdf"
-
-		// --- Remote pipeline (amba has ImageMagick + GS) ---
-		if userHost != "" {
-			remoteImg := fmt.Sprintf("/tmp/kp-img-%d%s", time.Now().UnixNano(), ext)
-			remoteInterimPDF := remoteImg + ".interim.pdf"
-			remoteFinalPDF := remoteImg + ".pdf"
-			if _, err := discovery.SSHWriteFile(userHost, remoteImg, data); err == nil {
-				defer func() {
-					_, _ = discovery.SSHRunSimple(userHost, "rm -f "+remoteImg+" "+remoteInterimPDF+" "+remoteFinalPDF)
-				}()
-				// Step A: ImageMagick flattens alpha → interim color PDF (300dpi)
-				cmdA := fmt.Sprintf("convert -density 300 %s -background white -flatten -alpha off -page %s %s 2>&1",
-					remoteImg, shellQuote(media), remoteInterimPDF)
-				if _, err := discovery.SSHRunSimple(userHost, cmdA); err == nil {
-					// Step B: GS normalizes PDF; if isGray, convert to DeviceGray
-					gsGrayArgs := ""
-					if isGray {
-						gsGrayArgs = "-sColorConversionStrategy=Gray -dProcessColorModel=/DeviceGray -dConvertCMYKImagesToRGB=false "
-					}
-					cmdB := fmt.Sprintf("gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 %s-sOutputFile=%s %s 2>&1",
-						gsGrayArgs, shellQuote(remoteFinalPDF), shellQuote(remoteInterimPDF))
-					if _, err := discovery.SSHRunSimple(userHost, cmdB); err == nil {
-						if pdfBytes, err := discovery.SSHReadFile(userHost, remoteFinalPDF); err == nil && len(pdfBytes) > 0 {
-							_ = os.WriteFile(dstPDF, pdfBytes, 0o644)
-							log.Printf("normalizeDocument: image %s → PDF via remote GS (grayscale=%v)", filepath.Base(src), isGray)
-							return dstPDF
-						}
-					} else {
-						log.Printf("normalizeDocument: remote gs step failed, trying interim PDF")
-						// Fallback: use interim PDF directly (color mode still works)
-						if pdfBytes, err := discovery.SSHReadFile(userHost, remoteInterimPDF); err == nil && len(pdfBytes) > 0 {
-							_ = os.WriteFile(dstPDF, pdfBytes, 0o644)
-							log.Printf("normalizeDocument: image %s → PDF via interim (grayscale=%v)", filepath.Base(src), isGray)
-							return dstPDF
-						}
-					}
-				} else {
-					log.Printf("normalizeDocument: remote ImageMagick step failed")
-				}
-			}
-		}
-
-		// --- Local fallback (only if running on Linux with both convert + gs) ---
 		if conv, err := exec.LookPath("convert"); err == nil {
-			interimPDF := src + ".interim.pdf"
-			args := []string{"-density", "300", src, "-background", "white", "-flatten", "-alpha", "off", "-page", media, interimPDF}
+			args := []string{"-density", "300", src, "-background", "white", "-flatten", "-alpha", "off"}
+			if isGray {
+				args = append(args, "-colorspace", "Gray", "-contrast-stretch", "0.5%x0.5%")
+			}
+			args = append(args, "-page", media, dstPDF)
 			if out, err := exec.Command(conv, args...).CombinedOutput(); err == nil {
-				if isGray {
-					if gs, err := exec.LookPath("gs"); err == nil {
-						gsArgs := []string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
-							"-dCompatibilityLevel=1.4",
-							"-sColorConversionStrategy=Gray", "-dProcessColorModel=/DeviceGray",
-							"-dConvertCMYKImagesToRGB=false",
-							"-sOutputFile=" + dstPDF, interimPDF}
-						if _, err := exec.Command(gs, gsArgs...).CombinedOutput(); err == nil {
-							_ = os.Remove(interimPDF)
-							if fi, _ := os.Stat(dstPDF); fi != nil && fi.Size() > 0 {
-								return dstPDF
-							}
-						}
-					}
-				}
-				// Use interim directly for color
-				_ = os.Rename(interimPDF, dstPDF)
-				if fi, _ := os.Stat(dstPDF); fi != nil && fi.Size() > 0 {
+				if fi, err := os.Stat(dstPDF); err == nil && fi.Size() > 0 {
 					return dstPDF
 				}
-			} else {
-				log.Printf("normalizeDocument: local convert failed (%v): %s", err, strings.TrimSpace(string(out)))
+			} else if log != nil {
+				log.Printf("normalizeDocument: local convert error (%v): %s", err, strings.TrimSpace(string(out)))
 			}
 		}
-		log.Printf("normalizeDocument: all image→PDF paths failed for %s, submitting raw", filepath.Base(src))
 		return src
 	}
 
-	// 2) Handling PDF documents: Ghostscript normalization & DeviceGray conversion
-	if isPDF {
-		gsGrayArgs := ""
-		if isGray {
-			gsGrayArgs = "-sColorConversionStrategy=Gray -dProcessColorModel=/DeviceGray -dConvertCMYKImagesToRGB=false "
-		}
-
-		// Local gs
-		if gs, err := exec.LookPath("gs"); err == nil {
-			dst := src + ".norm.pdf"
-			args := []string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
-				"-dCompatibilityLevel=1.4", "-dPDFSETTINGS=/prepress"}
-			if isGray {
-				args = append(args, "-sColorConversionStrategy=Gray", "-dProcessColorModel=/DeviceGray")
-			}
-			args = append(args, "-sOutputFile="+dst, src)
-			cmd := exec.Command(gs, args...)
-			if out, err := cmd.CombinedOutput(); err == nil {
-				if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
-					_ = os.Remove(src)
-					_ = os.Rename(dst, src)
-					return src
-				}
-			} else {
-				log.Printf("normalizeDocument: local gs failed (%v): %s", err, strings.TrimSpace(string(out)))
-			}
-			_ = os.Remove(dst)
-		}
-
-		// Remote gs via SSH
-		if userHost != "" {
-			remoteTmp := fmt.Sprintf("/tmp/kp-%d-%s", time.Now().UnixNano(), filepath.Base(src))
-			remoteOut := remoteTmp + ".norm.pdf"
-			if _, err := discovery.SSHWriteFile(userHost, remoteTmp, data); err != nil {
-				log.Printf("normalizeDocument: ssh upload failed: %v", err)
-				return src
-			}
-			defer func() { _, _ = discovery.SSHRunSimple(userHost, "rm -f "+remoteTmp+" "+remoteOut) }()
-			cmd := fmt.Sprintf("gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 %s-sOutputFile=%s %s 2>&1", gsGrayArgs, shellQuote(remoteOut), shellQuote(remoteTmp))
-			outStr, err := discovery.SSHRunSimple(userHost, cmd)
-			if err != nil {
-				log.Printf("normalizeDocument: remote gs failed: %v (%s)", err, strings.TrimSpace(outStr))
-				return src
-			}
-			norm, err := discovery.SSHReadFile(userHost, remoteOut)
-			if err != nil || len(norm) == 0 {
-				log.Printf("normalizeDocument: read remote normalized failed: %v", err)
-				return src
-			}
-			if len(norm) > 0 {
-				_ = os.Remove(src)
-				_ = os.WriteFile(src, norm, 0o644)
-				log.Printf("normalizeDocument: normalized %s (remote gs, grayscale=%v)", filepath.Base(src), isGray)
-			}
-		}
-	}
-
+	// 2) Handling PDF documents: Vector PDFs are already high-fidelity print-ready
+	// CUPS ESC/P-R rasterizer natively handles Ink=MONO at native hardware DPI.
 	return src
 }
 

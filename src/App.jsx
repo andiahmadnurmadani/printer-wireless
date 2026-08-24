@@ -43,7 +43,7 @@ function Shell() {
 
   const pages = {
     dashboard: <Dashboard onNavigate={handleNavigate} />,
-    print: <PrintPage />,
+    print: <PrintPage onNavigate={handleNavigate} />,
     printers: <PrintersPage />,
     queue: <QueuePage />,
     history: <HistoryPage />,

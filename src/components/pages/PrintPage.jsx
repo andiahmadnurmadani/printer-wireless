@@ -62,10 +62,11 @@ function Toggle({ label, desc, checked, onChange }) {
   )
 }
 
-export default function PrintPage() {
+export default function PrintPage({ onNavigate }) {
   const { printers, submitJob, defaultPrinter, toast } = useApp()
   const fileInputRef = useRef(null)
 
+  const [submitting, setSubmitting] = useState(false)
   const [file, setFile] = useState(null)
   const [printerId, setPrinterId] = useState(defaultPrinter?.id || '')
   const [copies, setCopies] = useState(1)
@@ -221,6 +222,8 @@ export default function PrintPage() {
       toast('Please add a document first', 'error')
       return
     }
+    if (submitting) return
+    setSubmitting(true)
     try {
       await submitJob({
         fileType: file.name.split('.').pop()?.toUpperCase() || 'PDF',
@@ -239,8 +242,13 @@ export default function PrintPage() {
       }, file)
       setFile(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
+      if (onNavigate) {
+        onNavigate('queue')
+      }
     } catch (e) {
       toast(e.message, 'error')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -553,9 +561,18 @@ export default function PrintPage() {
                 variant="lime"
                 size="lg"
                 onClick={handleSubmit}
-                icon={<IconUpload size={18} />}
+                disabled={!file || submitting}
+                icon={submitting ? (
+                  <span className="w-4 h-4 border-2 border-dark-black-900 border-t-transparent rounded-full animate-spin shrink-0" />
+                ) : (
+                  <IconUpload size={18} />
+                )}
               >
-                {file ? `Send to Printer (${copies} cop${copies > 1 ? 'ies' : 'y'})` : 'Upload a Document First'}
+                {submitting
+                  ? 'Menambahkan ke Antrean...'
+                  : file
+                  ? `Send to Printer (${copies} cop${copies > 1 ? 'ies' : 'y'})`
+                  : 'Upload a Document First'}
               </Button>
 
               {file && (

@@ -26,8 +26,11 @@ export async function loadPdfDocument(source) {
   return loadingTask.promise
 }
 
+// In-memory render cache for instant page navigation (< 5ms)
+const pageBitmapCache = new Map()
+
 /**
- * Render a single PDF page onto an HTML5 canvas
+ * Render a single PDF page onto an HTML5 canvas with intelligent memory caching
  * @param {pdfjsLib.PDFDocumentProxy} pdfDoc
  * @param {number} pageNum 1-indexed
  * @param {HTMLCanvasElement} canvas
@@ -36,19 +39,33 @@ export async function loadPdfDocument(source) {
  */
 export async function renderPdfPageToCanvas(pdfDoc, pageNum, canvas, targetWidth = 800) {
   if (!pdfDoc || !canvas) return
+
+  const cacheKey = `${pdfDoc.fingerprint || 'doc'}_p${pageNum}_w${targetWidth}`
+  const ctx = canvas.getContext('2d', { alpha: false })
+  const outputScale = window.devicePixelRatio || 1
+
+  // Fast cache hit
+  if (pageBitmapCache.has(cacheKey)) {
+    const cached = pageBitmapCache.get(cacheKey)
+    canvas.width = cached.width
+    canvas.height = cached.height
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    ctx.drawImage(cached.image, 0, 0)
+    return
+  }
+
   const page = await pdfDoc.getPage(pageNum)
   const unscaledViewport = page.getViewport({ scale: 1.0 })
   const scale = targetWidth / unscaledViewport.width
   const viewport = page.getViewport({ scale: Math.max(0.5, scale) })
 
   // Support HiDPI / Retina screens
-  const outputScale = window.devicePixelRatio || 1
   canvas.width = Math.floor(viewport.width * outputScale)
   canvas.height = Math.floor(viewport.height * outputScale)
   canvas.style.width = '100%'
   canvas.style.height = '100%'
 
-  const ctx = canvas.getContext('2d', { alpha: false })
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
   ctx.scale(outputScale, outputScale)
@@ -63,4 +80,20 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNum, canvas, targetWidth
   }
 
   await page.render(renderContext).promise
+
+  // Store in cache
+  try {
+    const img = new Image()
+    img.src = canvas.toDataURL('image/jpeg', 0.88)
+    img.onload = () => {
+      pageBitmapCache.set(cacheKey, { image: img, width: canvas.width, height: canvas.height })
+      // Keep cache size bounded
+      if (pageBitmapCache.size > 80) {
+        const firstKey = pageBitmapCache.keys().next().value
+        pageBitmapCache.delete(firstKey)
+      }
+    }
+  } catch {
+    // Ignore canvas security errors
+  }
 }

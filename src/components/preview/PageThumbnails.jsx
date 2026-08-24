@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 function isPageInRange(pageNum, rangeStr, total) {
   if (!rangeStr || !rangeStr.trim()) return true
@@ -128,33 +128,87 @@ export default function PageThumbnails({
   )
 }
 
+const globalThumbCache = new Map()
+
 function PdfThumbCanvas({ pdfDoc, pageNum }) {
   const canvasRef = useRef(null)
+  const [rendered, setRendered] = useState(false)
 
   useEffect(() => {
     let active = true
-    async function renderThumb() {
-      if (!pdfDoc || !canvasRef.current) return
+    const cacheKey = `${pdfDoc?.fingerprint || 'doc'}_thumb_${pageNum}`
+
+    // 1) Instant Cache hit
+    if (globalThumbCache.has(cacheKey)) {
+      const dataUrl = globalThumbCache.get(cacheKey)
+      if (canvasRef.current) {
+        const img = new Image()
+        img.src = dataUrl
+        img.onload = () => {
+          if (!active || !canvasRef.current) return
+          canvasRef.current.width = img.width
+          canvasRef.current.height = img.height
+          const ctx = canvasRef.current.getContext('2d')
+          ctx.drawImage(img, 0, 0)
+          setRendered(true)
+        }
+      }
+      return () => { active = false }
+    }
+
+    // 2) Lazy render via IntersectionObserver or for first 8 pages
+    let observer = null
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    async function executeRender() {
+      if (!pdfDoc || !canvasRef.current || !active) return
       try {
         const page = await pdfDoc.getPage(pageNum)
         if (!active || !canvasRef.current) return
         const viewport = page.getViewport({ scale: 0.18 })
-        const canvas = canvasRef.current
-        canvas.width = viewport.width
-        canvas.height = viewport.height
-        const ctx = canvas.getContext('2d')
+        const c = canvasRef.current
+        c.width = Math.max(20, Math.floor(viewport.width))
+        c.height = Math.max(20, Math.floor(viewport.height))
+        const ctx = c.getContext('2d', { alpha: false })
         ctx.fillStyle = '#FFFFFF'
-        ctx.fillRect(0, 0, viewport.width, viewport.height)
+        ctx.fillRect(0, 0, c.width, c.height)
         await page.render({ canvasContext: ctx, viewport }).promise
-      } catch (err) {
-        // silent fail on cancel
+        if (active && c) {
+          globalThumbCache.set(cacheKey, c.toDataURL('image/jpeg', 0.8))
+          setRendered(true)
+        }
+      } catch {
+        // ignore cancelled renders
       }
     }
-    renderThumb()
+
+    if (pageNum <= 8 || typeof IntersectionObserver === 'undefined') {
+      executeRender()
+    } else {
+      observer = new IntersectionObserver((entries) => {
+        if (entries[0]?.isIntersecting) {
+          executeRender()
+          if (observer && canvas) observer.unobserve(canvas)
+        }
+      }, { rootMargin: '100px' })
+      observer.observe(canvas)
+    }
+
     return () => {
       active = false
+      if (observer && canvas) observer.unobserve(canvas)
     }
   }, [pdfDoc, pageNum])
 
-  return <canvas ref={canvasRef} className="w-full h-full object-contain" />
+  return (
+    <div className="relative w-full h-full flex items-center justify-center bg-white">
+      <canvas ref={canvasRef} className={`w-full h-full object-contain ${rendered ? 'opacity-100' : 'opacity-0'} transition-opacity duration-150`} />
+      {!rendered && (
+        <div className="absolute inset-0 flex items-center justify-center bg-vanilla-200/40 text-[9px] font-geist font-bold text-dark-black-900/40">
+          {pageNum}
+        </div>
+      )}
+    </div>
+  )
 }

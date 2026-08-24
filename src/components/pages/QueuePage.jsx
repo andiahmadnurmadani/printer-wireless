@@ -34,8 +34,8 @@ export default function QueuePage() {
   const [overId, setOverId] = useState(null)
   const [showAll, setShowAll] = useState(false)
 
-  const activeJobs = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused'].includes(j.status)), [jobs])
-  const doneJobs = useMemo(() => jobs.filter((j) => ['completed', 'failed', 'cancelled'].includes(j.status)), [jobs])
+  const activeJobs = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused', 'failed'].includes(j.status)), [jobs])
+  const doneJobs = useMemo(() => jobs.filter((j) => ['completed', 'cancelled'].includes(j.status)), [jobs])
   const displayed = showAll ? activeJobs : activeJobs.slice(0, 8)
 
   const printerOf = (id) => printers.find((p) => p.id === id)?.name || 'Unknown printer'
@@ -128,6 +128,11 @@ export default function QueuePage() {
                       <span>·</span>
                       <span className="font-geist text-[11.5px]">{job.size}</span>
                     </div>
+                    {job.error && (
+                      <div className="mt-1.5 text-[12px] font-figtree font-medium text-err-600 bg-err-100/80 border border-err-500/40 rounded-[6px] px-2 py-0.5 inline-block">
+                        ⚠️ {job.error}
+                      </div>
+                    )}
                   </div>
 
                   {/* Progress (printing) */}

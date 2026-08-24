@@ -87,6 +87,21 @@ func (s *Server) syncCupsJobStatus() {
 		var cupsStatus string
 		if sshMode {
 			cupsStatus, _ = discovery.SSHGetJobStatus(userHost, printerName, j.CupsJobID)
+		} else if lpstat, err := exec.LookPath("lpstat"); err == nil {
+			targetPrefix := fmt.Sprintf("%s-%d", printerName, j.CupsJobID)
+			outBytes, _ := exec.Command(lpstat, "-o", printerName).CombinedOutput()
+			out := string(outBytes)
+			if strings.Contains(out, targetPrefix) {
+				cupsStatus = "printing"
+			} else {
+				outCBytes, _ := exec.Command(lpstat, "-W", "completed", "-o", printerName).CombinedOutput()
+				outC := string(outCBytes)
+				if strings.Contains(outC, targetPrefix) {
+					cupsStatus = "completed"
+				} else {
+					cupsStatus = "notfound"
+				}
+			}
 		} else {
 			cupsStatus = "printing"
 		}
@@ -274,8 +289,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 
-	// Uploads (served files)
-	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.cfg.UploadsDir))))
+	// Uploads (served files - safe file server without directory listing)
+	mux.HandleFunc("GET /uploads/", func(w http.ResponseWriter, r *http.Request) {
+		p := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/uploads/"))
+		if p == "" || p == "." || p == "/" {
+			http.NotFound(w, r)
+			return
+		}
+		fullPath := filepath.Join(s.cfg.UploadsDir, p)
+		fi, err := os.Stat(fullPath)
+		if err != nil || fi.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, fullPath)
+	})
 
 	return s.logRequests(s.enableCORS(mux))
 }
@@ -451,6 +479,19 @@ func (s *Server) handleRefreshPrinter(w http.ResponseWriter, r *http.Request) {
 					p.Status = "online"
 				}
 			}
+		} else if lpstat, err := exec.LookPath("lpstat"); err == nil {
+			// Local CUPS query via lpstat
+			if out, err := exec.Command(lpstat, "-p", printerName).CombinedOutput(); err == nil {
+				sOut := strings.ToLower(string(out))
+				switch {
+				case strings.Contains(sOut, "printing"):
+					p.Status = "printing"
+				case strings.Contains(sOut, "disabled") || strings.Contains(sOut, "offline") || strings.Contains(sOut, "unplugged"):
+					p.Status = "offline"
+				default:
+					p.Status = "online"
+				}
+			}
 		}
 	}
 	if err := s.store.UpdatePrinter(p); err != nil {
@@ -612,7 +653,7 @@ showpage
 
 	// Compile to PDF via local gs (Linux)
 	if gs, err := exec.LookPath("gs"); err == nil {
-		cmd := exec.Command(gs, "-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite", "-sOutputFile="+dstPath, psPath)
+		cmd := exec.Command(gs, "-q", "-dSAFER", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite", "-sOutputFile="+dstPath, psPath)
 		if out, err := cmd.CombinedOutput(); err == nil {
 			return nil
 		} else {
@@ -635,7 +676,7 @@ showpage
 			return err
 		}
 		defer func() { _, _ = discovery.SSHRunSimple(normHost, "rm -f "+remotePS+" "+remotePDF) }()
-		cmd := fmt.Sprintf("gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile=%s %s", remotePDF, remotePS)
+		cmd := fmt.Sprintf("gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile=%s %s", shellQuote(remotePDF), shellQuote(remotePS))
 		if _, err := discovery.SSHRunSimple(normHost, cmd); err != nil {
 			return err
 		}
@@ -721,9 +762,55 @@ func (s *Server) handleTestPrint(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	} else if lpstat, err := exec.LookPath("lpstat"); err == nil {
+		// Local Linux CUPS with lpstat + physical hardware probe
+		cmd := exec.Command(lpstat, "-p", printerName)
+		lpOutBytes, _ := cmd.CombinedOutput()
+		lpOut := strings.TrimSpace(string(lpOutBytes))
+
+		usbOutBytes, _ := exec.Command("sh", "-c", "ls -la /dev/usb/lp* 2>/dev/null; lsusb 2>/dev/null | grep -iE 'epson|print|04b8|03f0|04f9|04a9'").CombinedOutput()
+		usbOut := strings.TrimSpace(string(usbOutBytes))
+
+		lowLp := strings.ToLower(lpOut)
+		isUnplugged := strings.Contains(lowLp, "unplugged") || strings.Contains(lowLp, "turned off") || strings.Contains(lowLp, "not connected")
+		isUsbPresent := usbOut != ""
+
+		if strings.Contains(strings.ToLower(p.Connection), "usb") || strings.Contains(strings.ToLower(p.Address), "usb://") || strings.Contains(strings.ToLower(p.Name), "l3210") {
+			if isUnplugged && !isUsbPresent {
+				online = false
+				queueState = "offline"
+				details = "Printer is unplugged or turned off (hardware disconnected)"
+			} else if strings.Contains(lowLp, "idle") {
+				online = true
+				queueState = "idle"
+				details = "Printer is connected, idle and ready to accept jobs"
+			} else if strings.Contains(lowLp, "printing") {
+				online = true
+				queueState = "printing"
+				details = "Printer is currently active"
+			} else {
+				online = true
+				queueState = "online"
+				details = lpOut
+			}
+		} else {
+			if isUnplugged {
+				online = false
+				queueState = "offline"
+				details = "Printer is disconnected or turned off"
+			} else if strings.Contains(lowLp, "idle") {
+				online = true
+				queueState = "idle"
+				details = "Printer is online and ready"
+			} else {
+				online = true
+				queueState = "online"
+				details = lpOut
+			}
+		}
 	} else if s.cfg.CUPSURL != "" {
 		host := discovery.NormalizeHost(s.cfg.CUPSURL)
-		_, err := discovery.ProbeIPPPrinterTest(host, printerName, 2*time.Second)
+		_, err := discovery.ProbeIPPPrinterLocalHostTest(host, printerName, 2*time.Second)
 		if err == nil {
 			online = true
 			queueState = "idle"
@@ -900,6 +987,14 @@ func (s *Server) handleAddDiscovered(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
 	d, err := s.store.GetDiscovered(id)
 	if err != nil {
+		if u, uErr := url.PathUnescape(id); uErr == nil && u != id {
+			d, err = s.store.GetDiscovered(u)
+			if err == nil {
+				id = u
+			}
+		}
+	}
+	if err != nil {
 		writeErr(w, 404, "discovered printer not found")
 		return
 	}
@@ -927,7 +1022,11 @@ func (s *Server) handleAddDiscovered(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteDiscovered(w http.ResponseWriter, r *http.Request) {
-	_ = s.store.DeleteDiscovered(pathID(r))
+	id := pathID(r)
+	_ = s.store.DeleteDiscovered(id)
+	if u, uErr := url.PathUnescape(id); uErr == nil && u != id {
+		_ = s.store.DeleteDiscovered(u)
+	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -1155,6 +1254,45 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			}
 			jobID, submitErr = discovery.SSHSubmitJob(userHost, printerName, filePath, opts)
 			s.log.Printf("ssh-submit %s/%s: job-id=%d err=%v (grayscale=%v)", userHost, printerName, jobID, submitErr, isGray)
+		} else if lp, err := exec.LookPath("lp"); err == nil {
+			// Local CUPS printing via `lp -d <printerName>`
+			flags := []string{"-d", printerName}
+			if opts.Media != "" {
+				flags = append(flags, "-o", "media="+opts.Media)
+			}
+			if opts.Sides != "" {
+				flags = append(flags, "-o", "sides="+opts.Sides)
+			}
+			if opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" {
+				flags = append(flags, "-o", "print-color-mode=monochrome")
+			}
+			if opts.Copies > 1 {
+				flags = append(flags, "-n", strconv.Itoa(opts.Copies))
+			}
+			if opts.PageRange != "" {
+				flags = append(flags, "-o", "page-ranges="+opts.PageRange)
+			}
+			if opts.JobName != "" {
+				flags = append(flags, "-t", opts.JobName)
+			}
+			flags = append(flags, filePath)
+			cmd := exec.Command(lp, flags...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				submitErr = fmt.Errorf("local lp failed: %v (%s)", err, strings.TrimSpace(string(out)))
+			} else {
+				sOut := string(out)
+				if i := strings.LastIndex(sOut, "-"); i >= 0 {
+					idStr := strings.TrimSpace(sOut[i+1:])
+					if j := strings.IndexAny(idStr, " )"); j > 0 {
+						idStr = idStr[:j]
+					}
+					if n, err := strconv.Atoi(idStr); err == nil {
+						jobID = n
+					}
+				}
+				s.log.Printf("local-lp-submit %s: job-id=%d output=%s", printerName, jobID, strings.TrimSpace(sOut))
+			}
 		} else {
 			host := discovery.NormalizeHost(s.cfg.CUPSURL)
 			jobID, submitErr = discovery.SubmitPrintJob(host, printerName, filePath, opts)
@@ -1177,19 +1315,52 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, job)
 }
 
-// cupsPrinterName extracts the CUPS printer name from a registered printer.
+// cupsPrinterName extracts the CUPS printer queue name from a registered printer.
 func cupsPrinterName(p store.Printer) string {
-	if p.Address != "" {
-		if i := strings.LastIndex(p.Address, "/"); i >= 0 {
-			if name := p.Address[i+1:]; name != "" {
-				if un, err := url.PathUnescape(name); err == nil {
-					return un
+	// 1. If lpstat is locally available, find the matching queue from `lpstat -v`
+	if lpstat, err := exec.LookPath("lpstat"); err == nil {
+		if out, err := exec.Command(lpstat, "-v").Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				// Format: "device for L3210-Series: usb://EPSON/L3210%20Series?serial=..."
+				if strings.Contains(line, "device for ") && strings.Contains(line, ":") {
+					parts := strings.SplitN(line, ":", 2)
+					qPart := strings.TrimPrefix(parts[0], "device for ")
+					qName := strings.TrimSpace(qPart)
+					devURI := strings.TrimSpace(parts[1])
+					if p.Address != "" && (p.Address == devURI || strings.Contains(devURI, p.Address) || strings.Contains(p.Address, devURI)) {
+						return qName
+					}
+					if strings.EqualFold(strings.ReplaceAll(qName, "-", " "), p.Name) || strings.EqualFold(qName, p.Name) || strings.Contains(strings.ToLower(p.Name), strings.ToLower(qName)) {
+						return qName
+					}
 				}
-				return name
 			}
 		}
 	}
-	return p.Name
+
+	// 2. Fallback parsing from Address
+	if p.Address != "" {
+		addr := p.Address
+		if qIdx := strings.Index(addr, "?"); qIdx >= 0 {
+			addr = addr[:qIdx]
+		}
+		if i := strings.LastIndex(addr, "/"); i >= 0 {
+			rawName := addr[i+1:]
+			if un, err := url.PathUnescape(rawName); err == nil {
+				rawName = un
+			}
+			if rawName != "" {
+				return strings.ReplaceAll(rawName, " ", "-")
+			}
+		}
+	}
+
+	// 3. Fallback from p.Name
+	name := p.Name
+	if strings.HasPrefix(strings.ToLower(name), "epson ") {
+		name = strings.TrimPrefix(name[6:], " ")
+	}
+	return strings.ReplaceAll(name, " ", "-")
 }
 
 func sanitizeFilename(name string) string {
@@ -1243,10 +1414,38 @@ func shellQuote(s string) string {
 func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string) string {
 	ext := strings.ToLower(filepath.Ext(src))
 	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
+	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" || ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls"
 	isPDF := ext == ".pdf"
 
-	if !isImage && !isPDF {
+	if !isImage && !isDoc && !isPDF {
 		return src
+	}
+
+	// 0) Handling Office documents: Convert to PDF first via LibreOffice headless
+	if isDoc {
+		loCmd := ""
+		if p, err := exec.LookPath("libreoffice"); err == nil {
+			loCmd = p
+		} else if p, err := exec.LookPath("soffice"); err == nil {
+			loCmd = p
+		}
+		if loCmd != "" {
+			outDir := filepath.Dir(src)
+			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", outDir, src)
+			if out, err := cmd.CombinedOutput(); err == nil {
+				convertedPDF := strings.TrimSuffix(src, ext) + ".pdf"
+				if fi, err := os.Stat(convertedPDF); err == nil && fi.Size() > 0 {
+					if log != nil {
+						log.Printf("normalizeDocument: converted %s → %s via libreoffice", filepath.Base(src), filepath.Base(convertedPDF))
+					}
+					src = convertedPDF
+					ext = ".pdf"
+					isPDF = true
+				}
+			} else if log != nil {
+				log.Printf("normalizeDocument: libreoffice conversion failed (%v): %s", err, strings.TrimSpace(string(out)))
+			}
+		}
 	}
 
 	data, err := os.ReadFile(src)
@@ -1280,8 +1479,8 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 					if isGray {
 						gsGrayArgs = "-sColorConversionStrategy=Gray -dProcessColorModel=/DeviceGray -dConvertCMYKImagesToRGB=false "
 					}
-					cmdB := fmt.Sprintf("gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 %s-sOutputFile=%s %s 2>&1",
-						gsGrayArgs, remoteFinalPDF, remoteInterimPDF)
+					cmdB := fmt.Sprintf("gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 %s-sOutputFile=%s %s 2>&1",
+						gsGrayArgs, shellQuote(remoteFinalPDF), shellQuote(remoteInterimPDF))
 					if _, err := discovery.SSHRunSimple(userHost, cmdB); err == nil {
 						if pdfBytes, err := discovery.SSHReadFile(userHost, remoteFinalPDF); err == nil && len(pdfBytes) > 0 {
 							_ = os.WriteFile(dstPDF, pdfBytes, 0o644)
@@ -1310,7 +1509,7 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 			if out, err := exec.Command(conv, args...).CombinedOutput(); err == nil {
 				if isGray {
 					if gs, err := exec.LookPath("gs"); err == nil {
-						gsArgs := []string{"-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
+						gsArgs := []string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
 							"-dCompatibilityLevel=1.4",
 							"-sColorConversionStrategy=Gray", "-dProcessColorModel=/DeviceGray",
 							"-dConvertCMYKImagesToRGB=false",
@@ -1346,7 +1545,7 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		// Local gs
 		if gs, err := exec.LookPath("gs"); err == nil {
 			dst := src + ".norm.pdf"
-			args := []string{"-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
+			args := []string{"-q", "-dSAFER", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
 				"-dCompatibilityLevel=1.4", "-dPDFSETTINGS=/prepress"}
 			if isGray {
 				args = append(args, "-sColorConversionStrategy=Gray", "-dProcessColorModel=/DeviceGray")
@@ -1374,7 +1573,7 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 				return src
 			}
 			defer func() { _, _ = discovery.SSHRunSimple(userHost, "rm -f "+remoteTmp+" "+remoteOut) }()
-			cmd := fmt.Sprintf("gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 %s-sOutputFile=%s %s 2>&1", gsGrayArgs, remoteOut, remoteTmp)
+			cmd := fmt.Sprintf("gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 %s-sOutputFile=%s %s 2>&1", gsGrayArgs, shellQuote(remoteOut), shellQuote(remoteTmp))
 			outStr, err := discovery.SSHRunSimple(userHost, cmd)
 			if err != nil {
 				log.Printf("normalizeDocument: remote gs failed: %v (%s)", err, strings.TrimSpace(outStr))

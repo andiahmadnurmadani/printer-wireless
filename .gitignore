@@ -21,7 +21,9 @@ backend/data/
 # Environment & secrets
 .env
 .env.local
+.env.production
 .env.*.local
+Screenshot_*.jpeg
 
 # Logs
 *.log
@@ -39,3 +41,9 @@ Thumbs.db
 
 # Go build cache
 backend/vendor/
+backend/kroomprint-backend
+kroomprint-backend
+
+# Synology NAS
+@eaDir/
+@eaDir

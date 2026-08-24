@@ -125,7 +125,7 @@ func SSHRasterizePDF(userHost, localPDFPath string, grayscale bool, quality stri
 
 	// Rasterize all pages to PNG
 	out, err := sshRun(userHost,
-		fmt.Sprintf("gs -q -dNOPAUSE -dBATCH -sDEVICE=%s -r%s -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile=%s-%%d.png %s 2>&1 && ls %s-*.png", gsDevice, dpi, base, pdfRemote, base), nil)
+		fmt.Sprintf("gs -q -dSAFER -dNOPAUSE -dBATCH -sDEVICE=%s -r%s -dTextAlphaBits=4 -dGraphicsAlphaBits=4 -sOutputFile=%s-%%d.png %s 2>&1 && ls %s-*.png", gsDevice, dpi, base, pdfRemote, base), nil)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("gs rasterize: %w", err)
@@ -216,7 +216,7 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 	for _, f := range remoteFiles {
 		quoted = append(quoted, shellQuote(f))
 	}
-	remoteCmd := fmt.Sprintf("lp -d %q -t %q%s %s", printerName, jobName, optStr, strings.Join(quoted, " "))
+	remoteCmd := fmt.Sprintf("lp -d %s -t %s%s %s", shellQuote(printerName), shellQuote(jobName), optStr, strings.Join(quoted, " "))
 	out, err := sshRun(userHost, remoteCmd, nil)
 	if err != nil {
 		return 0, err
@@ -376,7 +376,7 @@ func SSHListPrinters(userHost string) ([]PrinterInfo, error) {
 // SSHProbePrinter queries printer capabilities via `lpoptions -p NAME -l`
 // and `lpstat -l -p NAME`. Returns a Capabilities struct.
 func SSHProbePrinter(userHost, printerName string) (*Capabilities, error) {
-	out, err := sshRun(userHost, fmt.Sprintf("lpoptions -p %q -l 2>/dev/null", printerName), nil)
+	out, err := sshRun(userHost, fmt.Sprintf("lpoptions -p %s -l 2>/dev/null", shellQuote(printerName)), nil)
 	if err != nil {
 		// Some CUPS setups restrict lpoptions; fall back to conservative caps.
 		return usbCaps(), nil

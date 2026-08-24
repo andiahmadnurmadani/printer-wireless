@@ -177,7 +177,11 @@ export function AppProvider({ children }) {
     const job = await api.createJob(payload, file)
     setJobs((list) => [job, ...list])
     const printer = printers.find((p) => p.id === payload.printerId)
-    toast(`Job added to ${printer?.name || 'printer'} queue`, 'success')
+    if (job?.status === 'failed') {
+      toast(`Gagal mencetak: ${job.error || 'Format dokumen atau printer bermasalah'}`, 'error')
+    } else {
+      toast(`Job added to ${printer?.name || 'printer'} queue`, 'success')
+    }
     return job
   }, [printers, toast])
 

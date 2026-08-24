@@ -1,9 +1,11 @@
 package discovery
 
 import (
+	"crypto/md5"
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -291,19 +293,51 @@ func (s *Scanner) scanUSBCUPS() []Device {
 			continue
 		}
 		uri := strings.TrimSpace(parts[1])
+
+		// Filter out generic CUPS backends that are not actual devices
+		if !strings.HasPrefix(uri, "usb://") && !strings.HasPrefix(uri, "dnssd://") && !strings.HasPrefix(uri, "socket://") && !strings.HasPrefix(uri, "ipp://") && !strings.HasPrefix(uri, "ipps://") {
+			continue
+		}
+
 		conn := "USB"
-		if strings.HasPrefix(uri, "network") || strings.HasPrefix(uri, "dnssd") || strings.HasPrefix(uri, "ipp") {
+		if strings.HasPrefix(uri, "network") || strings.HasPrefix(uri, "dnssd") || strings.HasPrefix(uri, "ipp") || strings.HasPrefix(uri, "socket") {
 			conn = "Network"
 		}
-		name := uri
-		if i := strings.Index(uri, "://"); i >= 0 {
-			name = uri[i+3:]
+
+		var brand, model, displayName, safeID string
+		h := md5.Sum([]byte(uri))
+		hexHash := fmt.Sprintf("%x", h[:4])
+
+		if strings.HasPrefix(uri, "usb://") {
+			rawPath := strings.TrimPrefix(uri, "usb://")
+			subparts := strings.SplitN(rawPath, "/", 2)
+			brand = subparts[0]
+			model = brand
+			if len(subparts) == 2 {
+				modelPart := strings.SplitN(subparts[1], "?", 2)[0]
+				if unescaped, err := url.PathUnescape(modelPart); err == nil {
+					model = unescaped
+				} else {
+					model = modelPart
+				}
+			}
+			brand = strings.Title(strings.ToLower(brand))
+			displayName = brand + " " + model
+			slug := strings.ToLower(strings.ReplaceAll(model, " ", "-"))
+			slug = strings.ReplaceAll(slug, "%20", "-")
+			safeID = fmt.Sprintf("cups-usb-%s-%s", slug, hexHash)
+		} else {
+			displayName = uri
+			brand = "CUPS"
+			model = uri
+			safeID = fmt.Sprintf("cups-%s", hexHash)
 		}
+
 		out = append(out, Device{
-			ID:         "cups-" + uri,
-			Name:       name,
-			Brand:      "CUPS",
-			Model:      uri,
+			ID:         safeID,
+			Name:       displayName,
+			Brand:      brand,
+			Model:      model,
 			Connection: conn,
 			Address:    uri,
 			MAC:        "—",

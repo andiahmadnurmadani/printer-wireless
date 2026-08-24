@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"crypto/md5"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,38 +29,70 @@ type Scanner struct {
 }
 
 // Scan finds real printers: USB devices attached to this machine,
-// IPP endpoints on the network, and printers on a configured remote CUPS.
-// No simulated devices — only hardware that actually exists.
+// mDNS / AirPrint / IPP Everywhere services, dynamic subnet sweeps, and remote CUPS.
 func (s *Scanner) Scan() ([]Device, error) {
 	if s.Delay > 0 {
 		time.Sleep(s.Delay)
 	}
 	var out []Device
 	seen := map[string]bool{}
+	var mu sync.Mutex
+
 	add := func(d Device) {
-		if d.ID == "" || seen[d.ID] {
+		if d.ID == "" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if seen[d.ID] || seen[d.Address] {
 			return
 		}
 		seen[d.ID] = true
+		seen[d.Address] = true
 		out = append(out, d)
 	}
 
-	// 1. USB printers physically connected to this host.
-	for _, d := range s.scanUSB() {
-		add(d)
-	}
+	var wg sync.WaitGroup
 
-	// 2. Remote CUPS server (e.g. pc-hitam at 100.90.80.85:631 or ssh://amba).
-	if s.CUPSURL != "" {
-		for _, d := range s.scanRemoteCUPS() {
+	// 1. USB printers physically connected to this host.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, d := range s.scanUSB() {
 			add(d)
 		}
+	}()
+
+	// 2. mDNS / Bonjour / AirPrint discovery via ippfind & driverless.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, d := range s.scanMdns() {
+			add(d)
+		}
+	}()
+
+	// 3. Dynamic subnet IP scan for open printer ports (631, 9100, 515).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, d := range s.scanSubnets() {
+			add(d)
+		}
+	}()
+
+	// 4. Remote CUPS server (if configured).
+	if s.CUPSURL != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, d := range s.scanRemoteCUPS() {
+				add(d)
+			}
+		}()
 	}
 
-	// 3. Real IPP printers (CUPS localhost + LAN).
-	for _, d := range s.probeReal() {
-		add(d)
-	}
+	wg.Wait()
 	return out, nil
 }
 
@@ -75,20 +109,262 @@ func inferBrandAndModel(name string) (brand string, model string) {
 		return "Epson", name
 	case strings.Contains(lower, "laserjet") || strings.Contains(lower, "m404"):
 		return "HP", "LaserJet Pro"
+	case strings.Contains(lower, "deskjet"):
+		return "HP", "DeskJet Series"
 	case strings.Contains(lower, "hp"):
 		return "HP", name
-	case strings.Contains(lower, "pixma") || strings.Contains(lower, "canon"):
+	case strings.Contains(lower, "pixma"):
+		return "Canon", "PIXMA Series"
+	case strings.Contains(lower, "canon"):
 		return "Canon", name
 	case strings.Contains(lower, "brother") || strings.Contains(lower, "hl-"):
 		return "Brother", name
 	default:
-		return "CUPS", name
+		return "Network Printer", name
 	}
 }
 
-// scanRemoteCUPS enumerates printers on a remote CUPS server.
-//   - ssh://user@host → SSH commands (lpstat/lpoptions)
-//   - http://host:631 → IPP Get-Printers + Get-Printer-Attributes
+// ── mDNS & AirPrint Discovery (ippfind, driverless) ──
+
+func (s *Scanner) scanMdns() []Device {
+	var out []Device
+
+	// Try ippfind (Standard CUPS mDNS discovery)
+	if path, err := exec.LookPath("ippfind"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cmd := exec.CommandContext(ctx, path, "-T", "2")
+		output, _ := cmd.Output()
+		cancel()
+
+		for _, line := range strings.Split(string(output), "\n") {
+			uri := strings.TrimSpace(line)
+			if uri == "" || (!strings.HasPrefix(uri, "ipp://") && !strings.HasPrefix(uri, "ipps://") && !strings.HasPrefix(uri, "http://")) {
+				continue
+			}
+
+			parsed, pErr := url.Parse(uri)
+			if pErr != nil {
+				continue
+			}
+
+			host := parsed.Hostname()
+			brand, model := inferBrandAndModel(parsed.Path + " " + host)
+			name := fmt.Sprintf("%s (%s)", model, host)
+
+			caps := usbCaps()
+			if c, err := probeIPP(parsed.Host, 1000*time.Millisecond); err == nil {
+				caps = c
+			}
+
+			h := md5.Sum([]byte(uri))
+			out = append(out, Device{
+				ID:         fmt.Sprintf("mdns-%x", h[:4]),
+				Name:       name,
+				Brand:      brand,
+				Model:      model,
+				Connection: "Network (AirPrint/mDNS)",
+				Address:    uri,
+				MAC:        "—",
+				IP:         host,
+				Caps:       *caps,
+				Source:     "mdns",
+			})
+		}
+	}
+
+	// Try driverless
+	if path, err := exec.LookPath("driverless"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		cmd := exec.CommandContext(ctx, path)
+		output, _ := cmd.Output()
+		cancel()
+
+		for _, line := range strings.Split(string(output), "\n") {
+			uri := strings.TrimSpace(line)
+			if uri == "" || strings.HasPrefix(uri, "DEBUG:") {
+				continue
+			}
+
+			brand, model := inferBrandAndModel(uri)
+			h := md5.Sum([]byte(uri))
+			out = append(out, Device{
+				ID:         fmt.Sprintf("driverless-%x", h[:4]),
+				Name:       model,
+				Brand:      brand,
+				Model:      model,
+				Connection: "Network (IPP Everywhere)",
+				Address:    uri,
+				MAC:        "—",
+				IP:         "",
+				Caps:       *usbCaps(),
+				Source:     "driverless",
+			})
+		}
+	}
+
+	return out
+}
+
+// ── Fast Dynamic Subnet & Port Sweep ──
+
+func (s *Scanner) scanSubnets() []Device {
+	var out []Device
+	var mu sync.Mutex
+
+	subnets := getLocalSubnets()
+	if len(subnets) == 0 {
+		subnets = []string{"127.0.0.1", "192.168.1.1", "192.168.0.1"}
+	}
+
+	type probeTarget struct {
+		ip   string
+		port int
+	}
+
+	targets := make(chan probeTarget, 3000)
+
+	// High concurrency worker pool
+	workerCount := 128
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range targets {
+				address := fmt.Sprintf("%s:%d", t.ip, t.port)
+				conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+				if err != nil {
+					continue
+				}
+				conn.Close()
+
+				var dev Device
+				h := md5.Sum([]byte(address))
+				hexID := fmt.Sprintf("%x", h[:4])
+
+				if t.port == 631 {
+					caps, cErr := probeIPP(t.ip, 800*time.Millisecond)
+					if cErr != nil {
+						caps = usbCaps()
+					}
+					brand, model := inferBrandAndModel("Network IPP Printer " + t.ip)
+					dev = Device{
+						ID:         fmt.Sprintf("ipp-%s-%s", strings.ReplaceAll(t.ip, ".", "-"), hexID),
+						Name:       fmt.Sprintf("%s (%s)", model, t.ip),
+						Brand:      brand,
+						Model:      model,
+						Connection: "Network (IPP/631)",
+						Address:    fmt.Sprintf("ipp://%s:631/ipp/print", t.ip),
+						MAC:        "—",
+						IP:         t.ip,
+						Caps:       *caps,
+						Source:     "ipp",
+					}
+				} else if t.port == 9100 {
+					brand, model := inferBrandAndModel("RAW JetDirect Printer " + t.ip)
+					dev = Device{
+						ID:         fmt.Sprintf("raw-%s-%s", strings.ReplaceAll(t.ip, ".", "-"), hexID),
+						Name:       fmt.Sprintf("%s (%s:9100)", model, t.ip),
+						Brand:      brand,
+						Model:      model,
+						Connection: "Network (RAW/9100)",
+						Address:    fmt.Sprintf("socket://%s:9100", t.ip),
+						MAC:        "—",
+						IP:         t.ip,
+						Caps:       *usbCaps(),
+						Source:     "socket",
+					}
+				} else if t.port == 515 {
+					brand, model := inferBrandAndModel("LPD Printer " + t.ip)
+					dev = Device{
+						ID:         fmt.Sprintf("lpd-%s-%s", strings.ReplaceAll(t.ip, ".", "-"), hexID),
+						Name:       fmt.Sprintf("%s (%s:515)", model, t.ip),
+						Brand:      brand,
+						Model:      model,
+						Connection: "Network (LPD/515)",
+						Address:    fmt.Sprintf("lpd://%s/raw", t.ip),
+						MAC:        "—",
+						IP:         t.ip,
+						Caps:       *usbCaps(),
+						Source:     "lpd",
+					}
+				}
+
+				if dev.ID != "" {
+					mu.Lock()
+					out = append(out, dev)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	// Feed targets asynchronously
+	go func() {
+		portsToScan := []int{631, 9100, 515}
+		for _, ip := range subnets {
+			for _, port := range portsToScan {
+				targets <- probeTarget{ip: ip, port: port}
+			}
+		}
+		close(targets)
+	}()
+
+	wg.Wait()
+	return out
+}
+
+func getLocalSubnets() []string {
+	var ips []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ips
+	}
+
+	for _, iface := range ifaces {
+		// Only check UP and non-loopback interfaces
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		// Skip virtual docker/bridge/vpn interfaces for fast subnet scan
+		name := strings.ToLower(iface.Name)
+		if strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth") {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP.To4() == nil {
+				continue
+			}
+
+			ip4 := ipNet.IP.To4()
+			mask := ipNet.Mask
+
+			// Scan private physical LAN subnet (e.g. 192.168.x.x)
+			if len(mask) == 4 && mask[0] == 255 && mask[1] == 255 && mask[2] == 255 && ip4[0] == 192 && ip4[1] == 168 {
+				base := fmt.Sprintf("%d.%d.%d", ip4[0], ip4[1], ip4[2])
+				for host := 1; host <= 254; host++ {
+					ips = append(ips, fmt.Sprintf("%s.%d", base, host))
+				}
+			} else {
+				ips = append(ips, ip4.String())
+			}
+		}
+	}
+
+	ips = append(ips, "127.0.0.1")
+	return ips
+}
+
+// ── Remote CUPS Scanner ──
+
 func (s *Scanner) scanRemoteCUPS() []Device {
 	var out []Device
 
@@ -168,12 +444,10 @@ func (s *Scanner) scanRemoteCUPS() []Device {
 	return out
 }
 
-// scanUSB enumerates printers connected via USB on this machine.
-//   - Windows: HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR (devices the OS sees)
-//   - Linux:   `lpinfo -v` from CUPS (prints USB/parallel/driver URIs)
+// ── USB Printers Scanner ──
+
 func (s *Scanner) scanUSB() []Device {
 	var out []Device
-
 	if runtime.GOOS == "windows" {
 		out = append(out, s.scanUSBWindows()...)
 	} else {
@@ -182,7 +456,6 @@ func (s *Scanner) scanUSB() []Device {
 	return out
 }
 
-// isVirtualPrinter checks whether a printer is software/virtual (PDF, RustDesk, OneNote, Fax, etc.)
 func isVirtualPrinter(name, port, driver string) bool {
 	lowerName := strings.ToLower(name)
 	lowerPort := strings.ToLower(port)
@@ -220,12 +493,9 @@ func isVirtualPrinter(name, port, driver string) bool {
 	return false
 }
 
-// scanUSBWindows enumerates printers installed on this Windows machine
-// via WMI Win32_Printer — covers USB, network, and virtual printers.
-// Runs PowerShell once and parses tab-separated output (no JSON overhead).
 func (s *Scanner) scanUSBWindows() []Device {
 	var out []Device
-	ps := `Get-CimInstance Win32_Printer | ForEach-Object { "$($_.Name) " + [char]9 + "$($_.PortName) " + [char]9 + "$($_.DriverName) " + [char]9 + "$($_.PrinterStatus) " + [char]9 + "$($_.WorkOffline)" }`
+	ps := `Get-CimInstance Win32_Printer | ForEach-Object { "$($_.Name)` + "`t" + `$($_.PortName)` + "`t" + `$($_.DriverName)` + "`t" + `$($_.PrinterStatus)` + "`t" + `$($_.WorkOffline)" }`
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	output, err := cmd.Output()
 	if err != nil {
@@ -236,7 +506,7 @@ func (s *Scanner) scanUSBWindows() []Device {
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, "\t")
+		parts := strings.Split(line, "	")
 		if len(parts) < 2 {
 			continue
 		}
@@ -287,14 +557,12 @@ func (s *Scanner) scanUSBCUPS() []Device {
 		if line == "" {
 			continue
 		}
-		// Format: "direct usb://Brother/HL-L2350DW?serial=..."
 		parts := strings.SplitN(line, " ", 2)
 		if len(parts) != 2 {
 			continue
 		}
 		uri := strings.TrimSpace(parts[1])
 
-		// Filter out generic CUPS backends that are not actual devices
 		if !strings.HasPrefix(uri, "usb://") && !strings.HasPrefix(uri, "dnssd://") && !strings.HasPrefix(uri, "socket://") && !strings.HasPrefix(uri, "ipp://") && !strings.HasPrefix(uri, "ipps://") {
 			continue
 		}
@@ -349,8 +617,6 @@ func (s *Scanner) scanUSBCUPS() []Device {
 	return out
 }
 
-// usbCaps returns conservative capabilities for a USB printer found via OS.
-// Real IPP probing happens per-device when needed (add flow).
 func usbCaps() *Capabilities {
 	return &Capabilities{
 		PaperSizes:   []string{"A4", "A5", "Letter", "Legal"},
@@ -361,58 +627,4 @@ func usbCaps() *Capabilities {
 		Color:        true,
 		MaxCopies:    999,
 	}
-}
-
-func (s *Scanner) probeReal() []Device {
-	var out []Device
-	// CUPS on localhost (Linux/macOS)
-	if host := "127.0.0.1"; s.probeHost(host) {
-		if d, ok := s.deviceFromProbe(host, "CUPS Printer", "Network"); ok {
-			out = append(out, d)
-		}
-	}
-	// A few common LAN hosts (only reachable on real networks)
-	for _, ip := range []string{"192.168.1.1", "192.168.0.1"} {
-		if !s.probeHost(ip) {
-			continue
-		}
-		if d, ok := s.deviceFromProbe(ip, "Network Printer", "Network"); ok {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
-func (s *Scanner) probeHost(host string) bool {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, "631"), 800*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-func (s *Scanner) deviceFromProbe(ip, name, conn string) (Device, bool) {
-	caps, err := probeIPP(ip, 1500*time.Millisecond)
-	if err != nil {
-		return Device{}, false
-	}
-	model := "IPP Printer"
-	brand := "Generic"
-	if strings.Contains(name, "CUPS") {
-		brand = "CUPS"
-		model = "Virtual Printer"
-	}
-	return Device{
-		ID:         fmt.Sprintf("ipp-%s", strings.ReplaceAll(ip, ".", "-")),
-		Name:       name,
-		Brand:      brand,
-		Model:      model,
-		Connection: conn,
-		Address:    ip,
-		MAC:        "—",
-		IP:         ip,
-		Caps:       *caps,
-		Source:     "ipp",
-	}, true
 }

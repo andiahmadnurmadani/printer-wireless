@@ -38,7 +38,7 @@ export default function FinalPrintModal({
   const [imgUrl, setImgUrl] = useState(null)
   const [textContent, setTextContent] = useState('')
 
-  const isPdf = fileType === 'PDF' || file?.name?.toLowerCase().endsWith('.pdf')
+  const isPdf = !!pdfDoc || fileType === 'PDF' || file?.name?.toLowerCase().endsWith('.pdf')
   const isImage = ['PNG', 'JPG', 'JPEG', 'WEBP', 'BMP', 'HEIC', 'SVG'].includes(fileType)
   const isText = ['TXT', 'CSV', 'JSON', 'LOG', 'MD'].includes(fileType)
 

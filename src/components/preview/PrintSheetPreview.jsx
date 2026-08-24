@@ -32,7 +32,7 @@ export default function PrintSheetPreview({
   const [textContent, setTextContent] = useState('')
   const [textPages, setTextPages] = useState([])
 
-  const isPdf = fileType === 'PDF' || file?.name?.toLowerCase().endsWith('.pdf')
+  const isPdf = !!pdfDoc || fileType === 'PDF' || file?.name?.toLowerCase().endsWith('.pdf')
   const isImage = ['PNG', 'JPG', 'JPEG', 'WEBP', 'BMP', 'HEIC', 'SVG'].includes(fileType) ||
     /\.(png|jpe?g|webp|bmp|heic|svg)$/i.test(file?.name || '')
   const isText = ['TXT', 'CSV', 'JSON', 'LOG', 'MD'].includes(fileType) ||

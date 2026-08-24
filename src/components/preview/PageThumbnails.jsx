@@ -1,7 +1,25 @@
 import { useEffect, useRef } from 'react'
 
+function isPageInRange(pageNum, rangeStr, total) {
+  if (!rangeStr || !rangeStr.trim()) return true
+  const parts = rangeStr.split(/[,;\s]+/)
+  for (const part of parts) {
+    if (!part) continue
+    if (part.includes('-')) {
+      const [start, end] = part.split('-').map((n) => parseInt(n.trim(), 10))
+      const s = isNaN(start) ? 1 : start
+      const e = isNaN(end) ? total : end
+      if (pageNum >= s && pageNum <= e) return true
+    } else {
+      const n = parseInt(part.trim(), 10)
+      if (n === pageNum) return true
+    }
+  }
+  return false
+}
+
 /**
- * Thumbnail strip for multi-page documents
+ * Thumbnail strip for multi-page documents with real-time range highlights
  */
 export default function PageThumbnails({
   totalPages = 1,
@@ -16,6 +34,7 @@ export default function PageThumbnails({
   paperDim,
   color = true,
   duplex = false,
+  pageRange = '',
 }) {
   if (totalPages <= 1 && !isImage) return null
 
@@ -23,7 +42,7 @@ export default function PageThumbnails({
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="font-figtree text-[12px] font-semibold text-dark-black-900 uppercase tracking-wider">
-          Pages ({totalPages})
+          Pages ({totalPages}) {pageRange.trim() && <span className="text-lime-600 font-bold ml-1">· Custom Range Active</span>}
         </span>
         <span className="font-geist text-[11px] text-dark-black-900/50">
           Page {currentPage} of {totalPages}
@@ -34,6 +53,7 @@ export default function PageThumbnails({
         {Array.from({ length: totalPages }, (_, idx) => {
           const pageNum = idx + 1
           const isSelected = pageNum === currentPage
+          const inRange = isPageInRange(pageNum, pageRange, totalPages)
           const sheetNum = Math.ceil(pageNum / 2)
           const isBack = duplex && pageNum % 2 === 0
 
@@ -42,7 +62,9 @@ export default function PageThumbnails({
               key={pageNum}
               type="button"
               onClick={() => onSelectPage(pageNum)}
-              className={`group flex flex-col items-center gap-1.5 shrink-0 transition-all cursor-pointer focus:outline-none`}
+              className={`group flex flex-col items-center gap-1.5 shrink-0 transition-all cursor-pointer focus:outline-none ${
+                !inRange ? 'opacity-40 hover:opacity-80' : ''
+              }`}
             >
               {/* Paper thumbnail preview box */}
               <div
@@ -52,7 +74,9 @@ export default function PageThumbnails({
                 className={`relative w-[52px] rounded-[6px] border-2 bg-white flex items-center justify-center overflow-hidden transition-all duration-150 ${
                   isSelected
                     ? 'border-dark-black-900 shadow-[3px_3px_0px_0px_rgba(56,56,56,1)] ring-2 ring-lime-400 -translate-y-0.5'
-                    : 'border-dark-black-900/30 hover:border-dark-black-900 hover:shadow-[2px_2px_0px_0px_rgba(56,56,56,0.7)] opacity-70 hover:opacity-100'
+                    : inRange
+                    ? 'border-dark-black-900/30 hover:border-dark-black-900 hover:shadow-[2px_2px_0px_0px_rgba(56,56,56,0.7)]'
+                    : 'border-dashed border-dark-black-900/20'
                 }`}
               >
                 {/* Thumbnail content */}

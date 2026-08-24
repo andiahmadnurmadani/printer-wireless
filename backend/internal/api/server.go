@@ -289,6 +289,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 
+	// ── Document Preview Conversion ──
+	mux.HandleFunc("POST /api/convert/preview", s.handleConvertPreview)
+
 	// Uploads (served files - safe file server without directory listing)
 	mux.HandleFunc("GET /uploads/", func(w http.ResponseWriter, r *http.Request) {
 		p := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/uploads/"))
@@ -1803,4 +1806,91 @@ func clamp(v, lo, hi int) int {
 
 func randN(n int) int {
 	return time.Now().Nanosecond() % n
+}
+
+// handleConvertPreview converts an uploaded Office doc/image to high-res PDF on-the-fly for real-time UI preview
+func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeErr(w, 400, "invalid form data")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, 400, "missing file in form")
+		return
+	}
+	defer file.Close()
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	tmpInput := filepath.Join("/tmp", fmt.Sprintf("kp-prev-%d-%s", time.Now().UnixNano(), sanitizeFilename(header.Filename)))
+	outF, err := os.Create(tmpInput)
+	if err != nil {
+		writeErr(w, 500, "cannot create temporary file")
+		return
+	}
+	if _, err := io.Copy(outF, file); err != nil {
+		outF.Close()
+		_ = os.Remove(tmpInput)
+		writeErr(w, 500, "cannot write temporary file")
+		return
+	}
+	outF.Close()
+	defer os.Remove(tmpInput)
+
+	// 1) If already a PDF, serve directly
+	if ext == ".pdf" {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
+		http.ServeFile(w, r, tmpInput)
+		return
+	}
+
+	// 2) If image: convert to PDF using ImageMagick convert
+	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
+	if isImage {
+		tmpPDF := tmpInput + ".pdf"
+		defer os.Remove(tmpPDF)
+		if conv, err := exec.LookPath("convert"); err == nil {
+			cmd := exec.Command(conv, "-density", "150", tmpInput, "-background", "white", "-flatten", "-alpha", "off", "-page", "A4", tmpPDF)
+			if out, err := cmd.CombinedOutput(); err == nil {
+				if fi, err := os.Stat(tmpPDF); err == nil && fi.Size() > 0 {
+					w.Header().Set("Content-Type", "application/pdf")
+					w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
+					http.ServeFile(w, r, tmpPDF)
+					return
+				}
+			} else if s.log != nil {
+				s.log.Printf("preview image convert error: %v (%s)", err, string(out))
+			}
+		}
+	}
+
+	// 3) If Office Doc: convert using headless LibreOffice
+	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" || ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" || ext == ".txt" || ext == ".csv"
+	if isDoc {
+		loCmd := ""
+		if p, err := exec.LookPath("libreoffice"); err == nil {
+			loCmd = p
+		} else if p, err := exec.LookPath("soffice"); err == nil {
+			loCmd = p
+		}
+		if loCmd != "" {
+			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", "/tmp", tmpInput)
+			if out, err := cmd.CombinedOutput(); err == nil {
+				tmpPDF := strings.TrimSuffix(tmpInput, ext) + ".pdf"
+				defer os.Remove(tmpPDF)
+				if fi, err := os.Stat(tmpPDF); err == nil && fi.Size() > 0 {
+					w.Header().Set("Content-Type", "application/pdf")
+					w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
+					http.ServeFile(w, r, tmpPDF)
+					return
+				}
+			} else if s.log != nil {
+				s.log.Printf("preview libreoffice error: %v (%s)", err, string(out))
+			}
+		}
+	}
+
+	writeErr(w, 415, "cannot convert this file format to visual preview")
 }

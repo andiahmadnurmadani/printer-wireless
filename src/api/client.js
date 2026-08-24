@@ -2,7 +2,7 @@
 // KroomPrint API client — semua data dari backend Go
 // ─────────────────────────────────────────────
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const BASE = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8088` : 'http://localhost:8088')
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -24,6 +24,26 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  // Preview
+  convertForPreview: (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return fetch(`${BASE}/api/convert/preview`, {
+      method: 'POST',
+      body: fd,
+    }).then(async (res) => {
+      if (!res.ok) {
+        let msg = `Preview conversion error ${res.status}`
+        try {
+          const data = await res.json()
+          if (data?.error) msg = data.error
+        } catch {}
+        throw new Error(msg)
+      }
+      return res.blob()
+    })
+  },
+
   // Health
   health: () => request('/api/health'),
 

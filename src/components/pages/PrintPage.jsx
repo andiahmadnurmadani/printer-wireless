@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../../context/AppContext'
+import { api } from '../../api/client'
 import Button from '../ui/Button'
 import { FileTypeBadge } from '../ui/Badges'
 import {
@@ -96,9 +97,10 @@ export default function PrintPage() {
   const extOf = (name) => (name?.split('.').pop() || '').toLowerCase()
   const isImage = (name) => ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'heic', 'svg'].includes(extOf(name))
   const isPdf = (name) => extOf(name) === 'pdf'
+  const isOfficeDoc = (name) => ['docx', 'doc', 'odt', 'rtf', 'pptx', 'ppt', 'xlsx', 'xls'].includes(extOf(name))
   const isText = (name) => ['txt', 'csv', 'json', 'log', 'md'].includes(extOf(name))
 
-  // ── Parse file on selection (PDF real pages / Image / Text) ──
+  // ── Parse file on selection (PDF real pages / Office conversion / Image / Text) ──
   useEffect(() => {
     if (!file) {
       setPdfDoc(null)
@@ -123,6 +125,25 @@ export default function PrintPage() {
         .catch((err) => {
           console.warn('Cannot parse PDF with pdfjs:', err)
           if (!active) return
+          setPageCount(1)
+        })
+        .finally(() => {
+          if (active) setLoadingPdf(false)
+        })
+    } else if (isOfficeDoc(file.name)) {
+      // Convert Office document to real PDF for instant 1:1 layout preview
+      setLoadingPdf(true)
+      api.convertForPreview(file)
+        .then((blob) => loadPdfDocument(blob))
+        .then((doc) => {
+          if (!active) return
+          setPdfDoc(doc)
+          setPageCount(doc.numPages)
+          setCurrentPage(1)
+        })
+        .catch((err) => {
+          console.warn('Cannot convert Office doc for preview:', err)
+          if (!active) return
           setPageCount(Math.max(1, Math.round(file.size / 150000)) || 1)
         })
         .finally(() => {
@@ -143,8 +164,7 @@ export default function PrintPage() {
       setPageCount(1)
       setCurrentPage(1)
     } else {
-      // Office doc / other binary
-      setPageCount(Math.max(1, Math.round(file.size / 150000)) || 1)
+      setPageCount(1)
       setCurrentPage(1)
     }
 
@@ -307,6 +327,14 @@ export default function PrintPage() {
                 </div>
               </div>
 
+              {/* Conversion Loading Banner for real-time document rendering */}
+              {loadingPdf && (
+                <div className="flex items-center gap-2.5 px-4 py-3 rounded-[12px] bg-lime-300/60 border-2 border-dark-black-900 shadow-[2px_2px_0_0_rgba(56,56,56,1)] text-[13px] font-figtree font-bold text-dark-black-900 animate-pulse">
+                  <span className="w-4 h-4 border-2 border-dark-black-900 border-t-transparent rounded-full animate-spin shrink-0" />
+                  <span>Mengonversi halaman dokumen ke preview real-time (1:1 Layout & True Fonts)...</span>
+                </div>
+              )}
+
               {/* ── Virtual Paper Sheet Preview ── */}
               <PrintSheetPreview
                 file={file}
@@ -343,6 +371,7 @@ export default function PrintPage() {
                     paperDim={paperDim}
                     color={effColor}
                     duplex={duplex && canDuplex}
+                    pageRange={range}
                   />
                 </div>
               )}

@@ -112,9 +112,11 @@ export const api = {
   getAnalyticsSummary: () => request('/api/analytics/summary'),
   getAnalyticsExportUrl: (format = 'csv') => `${BASE}/api/analytics/export?format=${format}`,
 
-  // Settings
+  // Settings & Diagnostics
   getSettings: () => request('/api/settings'),
   putSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  getDiagnostics: () => request('/api/diagnostics/network'),
+  resetAllData: () => request('/api/settings/reset', { method: 'POST' }),
 
   // Real-Time SSE Streaming
   subscribeEvents: (onMessage) => {

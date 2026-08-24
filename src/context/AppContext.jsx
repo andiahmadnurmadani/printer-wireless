@@ -9,11 +9,23 @@ export function useApp() {
   return ctx
 }
 
+const normalizeSettings = (st = {}) => ({
+  autoRefresh: st.autoRefresh === true || st.autoRefresh === 'true',
+  notifications: st.notifications !== false && st.notifications !== 'false',
+  darkMode: st.darkMode === true || st.darkMode === 'true',
+  compactQueue: st.compactQueue === true || st.compactQueue === 'true',
+  userName: st.userName || 'Andi Ahmad',
+  userEmail: st.userEmail || 'andi@kroomprint.app',
+  workspaceName: st.workspaceName || 'KroomPrint Main',
+  cupsURL: st.cupsURL || 'http://localhost:631',
+  plan: st.plan || 'KroomPrint Pro',
+})
+
 export function AppProvider({ children }) {
   const [printers, setPrinters] = useState([])
   const [jobs, setJobs] = useState([])
   const [history, setHistory] = useState([])
-  const [settings, setSettings] = useState({ autoRefresh: true, notifications: true, darkMode: false, compactQueue: false })
+  const [settings, setSettings] = useState(normalizeSettings())
   const [selectedFile, setSelectedFile] = useState(null)
   const [toasts, setToasts] = useState([])
   const [loading, setLoading] = useState(true)
@@ -41,7 +53,7 @@ export function AppProvider({ children }) {
         setPrinters(ps)
         setJobs(js)
         setHistory(hs)
-        setSettings((prev) => ({ ...prev, ...st }))
+        setSettings(normalizeSettings(st))
       } catch (e) {
         if (!cancelled) {
           setConnected(false)
@@ -366,11 +378,24 @@ export function AppProvider({ children }) {
     toast('History cleared', 'info')
   }, [toast])
 
-  // ── Settings ──
+  // ── Settings & Diagnostics ──
   const updateSettings = useCallback(async (next) => {
     setSettings(next)
     await api.putSettings(next).catch(() => {})
   }, [])
+
+  const runDiagnostics = useCallback(async () => {
+    return await api.getDiagnostics()
+  }, [])
+
+  const resetAllData = useCallback(async () => {
+    const res = await api.resetAllData()
+    setJobs([])
+    setHistory([])
+    setSettings(normalizeSettings())
+    toast('Semua antrean cetak, riwayat, dan preferensi telah di-reset', 'success')
+    return res
+  }, [toast])
 
   // ── Derived ──
   const defaultPrinter = useMemo(() => printers.find((p) => p.isDefault) || printers[0], [printers])
@@ -379,7 +404,7 @@ export function AppProvider({ children }) {
 
   const value = useMemo(
     () => ({
-      printers, jobs, history, settings, selectedFile, setSelectedFile, toasts, toast,
+      printers, jobs, history, settings, setSettings: updateSettings, selectedFile, setSelectedFile, toasts, toast,
       loading, connected, backendInfo,
       // printers
       refreshPrinter, refreshAll, addPrinter, removePrinter, renamePrinter,
@@ -389,8 +414,8 @@ export function AppProvider({ children }) {
       scanForPrinters, addDiscovered,
       // jobs
       submitJob, cancelJob, pauseJob, resumeJob, retryJob, releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue,
-      // history & settings
-      clearHistory, updateSettings,
+      // history & settings & diagnostics
+      clearHistory, updateSettings, runDiagnostics, resetAllData,
       // derived
       defaultPrinter, activeCount, queueCount,
     }),
@@ -400,7 +425,7 @@ export function AppProvider({ children }) {
       setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
       cleanHead, nozzleCheck, getPrinterHealth,
       scanForPrinters, addDiscovered, submitJob, cancelJob, pauseJob, resumeJob, retryJob,
-      releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings,
+      releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings, runDiagnostics, resetAllData,
       defaultPrinter, activeCount, queueCount,
     ]
   )

@@ -338,6 +338,12 @@ func (s *Store) CompleteJobToHistory(j Job, status, errMsg string) error {
 	})
 }
 
+// ClearAllJobs removes all queued and active jobs.
+func (s *Store) ClearAllJobs() error {
+	_, err := s.db.Exec("DELETE FROM jobs")
+	return err
+}
+
 // ── Settings ──
 
 func (s *Store) GetSetting(key, def string) string {

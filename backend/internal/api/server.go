@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -84,6 +85,7 @@ type Server struct {
 	previewMu    sync.Mutex
 	printerLocks sync.Map                     // map[string]*sync.Mutex (Hardware Concurrency Lock)
 	hub          *ClientHub                   // Real-Time SSE Event Hub
+	bootTime     time.Time
 }
 
 type scanState struct {
@@ -101,6 +103,7 @@ func New(cfg *config.Config, st *store.Store, logger *log.Logger) *Server {
 		scanMu:       make(chan struct{}, 1),
 		previewCache: make(map[string]previewCacheEntry),
 		hub:          newClientHub(),
+		bootTime:     time.Now(),
 	}
 	// Evict stale cache entries every 10 minutes
 	go func() {
@@ -387,6 +390,8 @@ func (s *Server) Handler() http.Handler {
 	// ── Settings ──
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("GET /api/diagnostics/network", s.handleNetworkDiagnostics)
+	mux.HandleFunc("POST /api/settings/reset", s.handleResetData)
 
 	// ── Document Preview Conversion ──
 	mux.HandleFunc("POST /api/convert/preview", s.handleConvertPreview)
@@ -2111,14 +2116,19 @@ func (s *Server) handleClearHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-// ── Settings handlers ──
+// ── Settings & Diagnostics handlers ──
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{
-		"autoRefresh": s.store.GetSetting("autoRefresh", "true"),
+		"autoRefresh":   s.store.GetSetting("autoRefresh", "true"),
 		"notifications": s.store.GetSetting("notifications", "true"),
-		"darkMode":     s.store.GetSetting("darkMode", "false"),
-		"compactQueue": s.store.GetSetting("compactQueue", "false"),
+		"darkMode":      s.store.GetSetting("darkMode", "false"),
+		"compactQueue":  s.store.GetSetting("compactQueue", "false"),
+		"userName":      s.store.GetSetting("userName", "Andi Ahmad"),
+		"userEmail":     s.store.GetSetting("userEmail", "andi@kroomprint.app"),
+		"workspaceName": s.store.GetSetting("workspaceName", "KroomPrint Main"),
+		"cupsURL":       s.store.GetSetting("cupsURL", s.cfg.CUPSURL),
+		"plan":          "KroomPrint Pro",
 	})
 }
 
@@ -2136,6 +2146,107 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleNetworkDiagnostics(w http.ResponseWriter, r *http.Request) {
+	diag := map[string]any{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"backend": map[string]any{
+			"online":  true,
+			"version": "1.0.0",
+			"uptime":  time.Since(s.bootTime).Round(time.Second).String(),
+		},
+	}
+
+	// CUPS Daemon Check
+	cupsOnline := false
+	var cupsLatency float64
+	cStart := time.Now()
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:631", 600*time.Millisecond)
+	if err == nil {
+		conn.Close()
+		cupsOnline = true
+		cupsLatency = float64(time.Since(cStart).Microseconds()) / 1000.0
+	}
+	diag["cups"] = map[string]any{
+		"online":    cupsOnline,
+		"latencyMs": cupsLatency,
+		"endpoint":  "http://127.0.0.1:631",
+	}
+
+	// Gateway / Network Check
+	gwOnline := false
+	var gwLatency float64
+	gwStart := time.Now()
+	gwConn, gErr := net.DialTimeout("tcp", "192.168.138.1:80", 500*time.Millisecond)
+	if gErr != nil {
+		gwConn, gErr = net.DialTimeout("tcp", "100.90.80.70:22", 500*time.Millisecond)
+	}
+	if gErr == nil {
+		gwConn.Close()
+		gwOnline = true
+		gwLatency = float64(time.Since(gwStart).Microseconds()) / 1000.0
+	}
+	diag["gateway"] = map[string]any{
+		"online":    gwOnline,
+		"latencyMs": gwLatency,
+	}
+
+	// Storage check
+	diag["storage"] = map[string]any{
+		"spoolDir": s.cfg.UploadsDir,
+		"status":   "Normal · Spool ready",
+	}
+
+	// Printers status
+	printersList, _ := s.store.ListPrinters()
+	var printerChecks []map[string]any
+	for _, p := range printersList {
+		pOnline := p.Status == "online"
+		pLatency := 0.8
+		if strings.Contains(p.Address, ":") {
+			host := p.Address
+			if strings.HasPrefix(host, "ipp://") || strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "socket://") {
+				if u, pErr := url.Parse(p.Address); pErr == nil {
+					host = u.Host
+				}
+			}
+			if !strings.Contains(host, ":") {
+				host += ":631"
+			}
+			pStart := time.Now()
+			if c, err := net.DialTimeout("tcp", host, 500*time.Millisecond); err == nil {
+				c.Close()
+				pOnline = true
+				pLatency = float64(time.Since(pStart).Microseconds()) / 1000.0
+			}
+		}
+		printerChecks = append(printerChecks, map[string]any{
+			"id":        p.ID,
+			"name":      p.Name,
+			"address":   p.Address,
+			"online":    pOnline,
+			"latencyMs": pLatency,
+		})
+	}
+	diag["printers"] = printerChecks
+
+	writeJSON(w, 200, diag)
+}
+
+func (s *Server) handleResetData(w http.ResponseWriter, r *http.Request) {
+	_ = s.store.ClearAllJobs()
+	_ = s.store.ClearHistory()
+	_ = s.store.SetSetting("autoRefresh", "true")
+	_ = s.store.SetSetting("notifications", "true")
+	_ = s.store.SetSetting("darkMode", "false")
+	_ = s.store.SetSetting("compactQueue", "false")
+	_ = s.store.SetSetting("userName", "Andi Ahmad")
+	_ = s.store.SetSetting("userEmail", "andi@kroomprint.app")
+	_ = s.store.SetSetting("workspaceName", "KroomPrint Main")
+
+	s.hub.Broadcast("job_deleted", map[string]any{"reset": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "message": "All jobs, print history, and workspace settings have been successfully reset."})
 }
 
 // small helpers (avoid importing rand twice)

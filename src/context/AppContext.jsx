@@ -73,13 +73,23 @@ export function AppProvider({ children }) {
   useEffect(() => {
     const unsub = api.subscribeEvents((event) => {
       if (!event) return
-      if (event.type === 'job_created' || event.type === 'job_updated') {
+      if (event.type === 'job_created') {
         const j = event.data || event
         if (j?.id) {
           setJobs((list) => {
             const exists = list.some((x) => x.id === j.id)
             if (exists) return list.map((x) => (x.id === j.id ? { ...x, ...j } : x))
-            return [j, ...list]
+            const filtered = list.filter((x) => !x._optimistic)
+            return [j, ...filtered]
+          })
+        }
+      } else if (event.type === 'job_updated' || event.type === 'job_completed') {
+        const j = event.data || event
+        if (j?.id) {
+          setJobs((list) => {
+            const exists = list.some((x) => x.id === j.id)
+            if (exists) return list.map((x) => (x.id === j.id ? { ...x, ...j } : x))
+            return [j, ...list.filter((x) => !x._optimistic && x.id !== j.id)]
           })
         }
       } else if (event.type === 'job_deleted') {
@@ -99,7 +109,15 @@ export function AppProvider({ children }) {
         const [ps, js, hs] = await Promise.all([api.listPrinters(), api.listJobs(), api.listHistory()])
         if (!active) return
         setPrinters((prev) => (JSON.stringify(prev) === JSON.stringify(ps) ? prev : ps))
-        setJobs((prev) => (JSON.stringify(prev) === JSON.stringify(js) ? prev : js))
+        setJobs((prev) => {
+          const optimistic = prev.filter((x) => x._optimistic)
+          if (optimistic.length > 0) {
+            const backendIds = new Set(js.map((j) => j.id))
+            const pendingOpt = optimistic.filter((o) => !backendIds.has(o.id))
+            return [...pendingOpt, ...js]
+          }
+          return JSON.stringify(prev) === JSON.stringify(js) ? prev : js
+        })
         setHistory((prev) => (JSON.stringify(prev) === JSON.stringify(hs) ? prev : hs))
         setConnected(true)
 
@@ -264,8 +282,11 @@ export function AppProvider({ children }) {
 
     try {
       const job = await api.createJob(payload, file)
-      // Replace optimistic placeholder with real job from backend
-      setJobs((list) => [job, ...list.filter((j) => j.id !== optimisticId)])
+      // Replace optimistic placeholder and ensure no duplicate entries for job.id
+      setJobs((list) => {
+        const filtered = list.filter((j) => j.id !== optimisticId && j.id !== job.id)
+        return [job, ...filtered]
+      })
       const printer = printers.find((p) => p.id === payload.printerId)
       if (job?.status === 'failed') {
         toast(`Gagal mencetak: ${job.error || 'Format dokumen atau printer bermasalah'}`, 'error')

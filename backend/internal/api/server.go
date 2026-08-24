@@ -1753,6 +1753,9 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		job.Status = "failed"
 		job.Error = submitErr.Error()
 		_ = s.store.UpdateJob(job)
+		if s.hub != nil {
+			s.hub.Broadcast("job_updated", job)
+		}
 		return
 	}
 
@@ -1760,16 +1763,26 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	job.Progress = 20
 	job.CupsJobID = cupsJobID
 	_ = s.store.UpdateJob(job)
+	if s.hub != nil {
+		s.hub.Broadcast("job_updated", job)
+	}
 
 	// Smooth completion progress tracking
 	go func(j store.Job) {
 		time.Sleep(3 * time.Second)
 		j.Progress = 60
 		_ = s.store.UpdateJob(j)
-		time.Sleep(5 * time.Second)
+		if s.hub != nil {
+			s.hub.Broadcast("job_updated", j)
+		}
+		time.Sleep(4 * time.Second)
 		j.Progress = 100
 		j.Status = "completed"
 		_ = s.store.UpdateJob(j)
+		if s.hub != nil {
+			s.hub.Broadcast("job_updated", j)
+			s.hub.Broadcast("job_completed", j)
+		}
 
 		printerName := ""
 		if p, err := s.store.GetPrinter(j.PrinterID); err == nil {

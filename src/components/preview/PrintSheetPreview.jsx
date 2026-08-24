@@ -18,6 +18,10 @@ export default function PrintSheetPreview({
   scaling = 'Fit to page',
   quality = 'Standard',
   duplex = false,
+  nUp = 1,
+  watermark = '',
+  mediaType = 'Plain Paper',
+  inputTray = 'Auto Select',
   onPrevPage,
   onNextPage,
   onSelectPage,
@@ -267,12 +271,54 @@ export default function PrintSheetPreview({
               </div>
             )}
 
+            {/* Watermark Overlay */}
+            {watermark && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 overflow-hidden select-none">
+                <span
+                  className="font-figtree font-black uppercase text-dark-black-900/20 tracking-widest text-[36px] sm:text-[46px] md:text-[54px] -rotate-45 whitespace-nowrap"
+                  style={{ letterSpacing: '0.2em' }}
+                >
+                  {watermark}
+                </span>
+              </div>
+            )}
+
             {/* Document Content */}
             <div
               style={{ transform: scalingStyles.transform }}
               className="w-full h-full flex items-center justify-center transition-transform duration-200"
             >
-              {isPdf ? (
+              {nUp > 1 ? (
+                /* N-Up Multi-Page Grid Simulation */
+                <div
+                  className={`w-full h-full p-2 grid gap-1.5 items-center justify-center ${
+                    nUp === 2 ? 'grid-cols-2' : nUp === 4 ? 'grid-cols-2 grid-rows-2' : nUp === 6 ? 'grid-cols-3 grid-rows-2' : nUp === 9 ? 'grid-cols-3 grid-rows-3' : 'grid-cols-4 grid-rows-4'
+                  }`}
+                >
+                  {Array.from({ length: nUp }).map((_, idx) => {
+                    const subPage = (currentPage - 1) * nUp + idx + 1
+                    return (
+                      <div
+                        key={idx}
+                        className="w-full h-full border border-dark-black-900/30 rounded-[2px] bg-vanilla-100 p-1 flex flex-col justify-between overflow-hidden shadow-xs"
+                      >
+                        <div className="flex justify-between font-geist text-[6px] text-dark-black-900/50">
+                          <span>P.{subPage}</span>
+                          <span>{subPage <= totalPages ? '✓' : '—'}</span>
+                        </div>
+                        <div className="w-full h-full flex flex-col gap-0.5 my-auto justify-center px-1">
+                          <div className="w-2/3 h-1 bg-dark-black-900/40 rounded-[1px]" />
+                          <div className="w-full h-0.5 bg-dark-black-900/20 rounded-[1px]" />
+                          <div className="w-4/5 h-0.5 bg-dark-black-900/20 rounded-[1px]" />
+                        </div>
+                        <div className="text-[5.5px] font-geist text-dark-black-900/40 text-center">
+                          {nUp}-Up Sheet
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : isPdf ? (
                 <canvas
                   ref={canvasRef}
                   className="w-full h-full object-contain pointer-events-none"
@@ -322,7 +368,7 @@ export default function PrintSheetPreview({
         </div>
 
         {/* Dynamic Parameter Feedback Indicator under Paper */}
-        <div className="mt-4 flex items-center justify-center gap-3 text-[12px] font-geist text-dark-black-900/75 flex-wrap text-center">
+        <div className="mt-4 flex items-center justify-center gap-2.5 text-[11.5px] font-geist text-dark-black-900/75 flex-wrap text-center">
           <span className="bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
             📐 <span className="font-bold text-dark-black-900">{paperDim.label}</span>
           </span>
@@ -330,8 +376,23 @@ export default function PrintSheetPreview({
             🔍 <span className="font-bold text-dark-black-900">{scalingStyles.label}</span>
           </span>
           <span className="bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
-            🎨 <span className={`font-bold ${color ? 'text-ok-500' : 'text-dark-black-900'}`}>{color ? 'Full Color (RGB)' : 'Grayscale (B&W)'}</span>
+            🎨 <span className={`font-bold ${color ? 'text-ok-500' : 'text-dark-black-900'}`}>{color ? 'Full Color' : 'Grayscale'}</span>
           </span>
+          {nUp > 1 && (
+            <span className="bg-lime-300 border border-dark-black-900/40 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
+              📑 {nUp}-Up Grid
+            </span>
+          )}
+          {watermark && (
+            <span className="bg-watermelon-500/20 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
+              🏷️ Stamp: "{watermark}"
+            </span>
+          )}
+          {mediaType && mediaType !== 'Plain Paper' && (
+            <span className="bg-sky-blue-100 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
+              📄 {mediaType}
+            </span>
+          )}
         </div>
       </div>
 

@@ -296,6 +296,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/printers/{id}/default", s.handleSetDefault)
 	mux.HandleFunc("POST /api/printers/{id}/rename", s.handleRenamePrinter)
 	mux.HandleFunc("GET /api/printers/{id}/health", s.handlePrinterHealth)
+	mux.HandleFunc("GET /api/printers/{id}/ppd-options", s.handleGetPPDOptions)
 	mux.HandleFunc("POST /api/printers/{id}/maintenance/clean-head", s.handleCleanHead)
 	mux.HandleFunc("POST /api/printers/{id}/maintenance/nozzle-check", s.handleNozzleCheck)
 
@@ -1070,6 +1071,38 @@ func (s *Server) handlePrinterHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetPPDOptions dynamically introspects native CUPS PPD printer options.
+func (s *Server) handleGetPPDOptions(w http.ResponseWriter, r *http.Request) {
+	id := pathID(r)
+	p, err := s.store.GetPrinter(id)
+	if err != nil {
+		writeErr(w, 404, "printer not found")
+		return
+	}
+
+	printerName := cupsPrinterName(p)
+	userHost := s.cfg.CUPSSSH
+	if userHost == "" && discovery.IsSSHURL(s.cfg.CUPSURL) {
+		userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
+	}
+
+	options, err := discovery.SSHGetPPDOptions(userHost, printerName)
+	if err != nil || len(options) == 0 {
+		// Fallback default options
+		options = []discovery.PPDOption{
+			{Name: "PageSize", Label: "Paper Size", Default: "A4", Values: []string{"A4", "A5", "Letter", "Legal", "4X6FULL"}},
+			{Name: "MediaType", Label: "Print Quality / Media", Default: "PLAIN_NORMAL", Values: []string{"PLAIN_NORMAL", "PLAIN_HIGH", "PMPHOTO_HIGH", "PMMATT_NORMAL"}},
+			{Name: "Ink", Label: "Color Mode", Default: "COLOR", Values: []string{"COLOR", "MONO"}},
+		}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"printerId":   p.ID,
+		"printerName": p.Name,
+		"options":     options,
+	})
+}
+
 // handleCleanHead triggers a printhead cleaning cycle for the target printer.
 func (s *Server) handleCleanHead(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
@@ -1274,20 +1307,29 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type createJobReq struct {
-	FileType    string `json:"fileType"`
-	Pages       int    `json:"pages"`
-	Copies      int    `json:"copies"`
-	Color       bool   `json:"color"`
-	Duplex      bool   `json:"duplex"`
-	PaperSize   string `json:"paperSize"`
-	Orientation string `json:"orientation"`
-	Quality     string `json:"quality"`
-	Scaling     string `json:"scaling"`
-	PageRange   string `json:"pageRange"`
-	Priority    int    `json:"priority"`
-	PrinterID   string `json:"printerId"`
-	Size        string `json:"size"`
-	FileName    string `json:"fileName,omitempty"`
+	FileType     string `json:"fileType"`
+	Pages        int    `json:"pages"`
+	Copies       int    `json:"copies"`
+	Color        bool   `json:"color"`
+	Duplex       bool   `json:"duplex"`
+	PaperSize    string `json:"paperSize"`
+	Orientation  string `json:"orientation"`
+	Quality      string `json:"quality"`
+	Scaling      string `json:"scaling"`
+	PageRange    string `json:"pageRange"`
+	Priority     int    `json:"priority"`
+	PrinterID    string `json:"printerId"`
+	Size         string `json:"size"`
+	FileName     string `json:"fileName,omitempty"`
+	NUp          int    `json:"nUp,omitempty"`
+	Collate      bool   `json:"collate,omitempty"`
+	MediaType    string `json:"mediaType,omitempty"`
+	InputTray    string `json:"inputTray,omitempty"`
+	Borderless   bool   `json:"borderless,omitempty"`
+	Booklet      bool   `json:"booklet,omitempty"`
+	Watermark    string `json:"watermark,omitempty"`
+	ManualDuplex bool   `json:"manualDuplex,omitempty"`
+	DuplexStep   string `json:"duplexStep,omitempty"`
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
@@ -1456,14 +1498,23 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	}
 
 	opts := discovery.JobOptions{
-		Media:     req.PaperSize,
-		Sides:     "one-sided",
-		Copies:    req.Copies,
-		ColorMode: "color",
-		Quality:   req.Quality,
-		JobName:   name,
-		FileType:  mimeForFile(name),
-		PageRange: req.PageRange,
+		Media:        req.PaperSize,
+		Sides:        "one-sided",
+		Copies:       req.Copies,
+		ColorMode:    "color",
+		Quality:      req.Quality,
+		JobName:      name,
+		FileType:     mimeForFile(name),
+		PageRange:    req.PageRange,
+		NUp:          req.NUp,
+		Collate:      req.Collate,
+		MediaType:    req.MediaType,
+		InputTray:    req.InputTray,
+		Borderless:   req.Borderless,
+		Booklet:      req.Booklet,
+		Watermark:    req.Watermark,
+		ManualDuplex: req.ManualDuplex,
+		DuplexStep:   req.DuplexStep,
 	}
 	if req.Duplex {
 		opts.Sides = "two-sided-long-edge"
@@ -1512,10 +1563,36 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		} else {
 			flags = append(flags, "-o", "Ink=COLOR")
 		}
-		if req.Quality == "High" || req.Quality == "Photo" {
+		if opts.MediaType != "" {
+			flags = append(flags, "-o", "MediaType="+opts.MediaType)
+		} else if req.Quality == "High" || req.Quality == "Photo" {
 			flags = append(flags, "-o", "MediaType=PLAIN_HIGH")
 		} else {
 			flags = append(flags, "-o", "MediaType=PLAIN_NORMAL")
+		}
+		if opts.NUp > 1 {
+			flags = append(flags, "-o", fmt.Sprintf("number-up=%d", opts.NUp), "-o", "number-up-layout=lrtb")
+		}
+		if opts.Collate {
+			flags = append(flags, "-o", "Collate=True")
+		} else if opts.Copies > 1 {
+			flags = append(flags, "-o", "Collate=False")
+		}
+		if opts.InputTray != "" && opts.InputTray != "Auto Select" {
+			flags = append(flags, "-o", "InputSlot="+opts.InputTray)
+		}
+		if opts.Borderless {
+			flags = append(flags, "-o", "PageSize="+opts.Media+".Borderless")
+		}
+		if opts.Booklet {
+			flags = append(flags, "-o", "booklet=true")
+		}
+		if opts.ManualDuplex {
+			if opts.DuplexStep == "odd" {
+				flags = append(flags, "-o", "page-set=odd")
+			} else if opts.DuplexStep == "even" {
+				flags = append(flags, "-o", "page-set=even", "-o", "outputorder=reverse")
+			}
 		}
 		if opts.Copies > 1 {
 			flags = append(flags, "-n", strconv.Itoa(opts.Copies))

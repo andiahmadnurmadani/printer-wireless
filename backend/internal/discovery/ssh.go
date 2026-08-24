@@ -200,6 +200,33 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 	if opts.Copies > 1 {
 		flags = append(flags, fmt.Sprintf("copies=%d", opts.Copies))
 	}
+	if opts.NUp > 1 {
+		flags = append(flags, fmt.Sprintf("number-up=%d", opts.NUp), "number-up-layout=lrtb")
+	}
+	if opts.Collate {
+		flags = append(flags, "Collate=True")
+	} else if opts.Copies > 1 {
+		flags = append(flags, "Collate=False")
+	}
+	if opts.MediaType != "" {
+		flags = append(flags, fmt.Sprintf("MediaType=%s", opts.MediaType))
+	}
+	if opts.InputTray != "" && opts.InputTray != "Auto Select" {
+		flags = append(flags, fmt.Sprintf("InputSlot=%s", opts.InputTray))
+	}
+	if opts.Borderless {
+		flags = append(flags, "PageSize="+normalizeMediaPPD(opts.Media)+".Borderless")
+	}
+	if opts.Booklet {
+		flags = append(flags, "booklet=true")
+	}
+	if opts.ManualDuplex {
+		if opts.DuplexStep == "odd" {
+			flags = append(flags, "page-set=odd")
+		} else if opts.DuplexStep == "even" {
+			flags = append(flags, "page-set=even", "outputorder=reverse")
+		}
+	}
 	if opts.PageRange != "" {
 		// lp -P accepts CUPS page-ranges format: "1", "1-5", "1,3,5-7"
 		flags = append(flags, fmt.Sprintf("page-ranges=%s", normalizePageRange(opts.PageRange)))
@@ -520,6 +547,33 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 	if opts.Copies > 1 {
 		flags = append(flags, fmt.Sprintf("copies=%d", opts.Copies))
 	}
+	if opts.NUp > 1 {
+		flags = append(flags, fmt.Sprintf("number-up=%d", opts.NUp), "number-up-layout=lrtb")
+	}
+	if opts.Collate {
+		flags = append(flags, "Collate=True")
+	} else if opts.Copies > 1 {
+		flags = append(flags, "Collate=False")
+	}
+	if opts.MediaType != "" {
+		flags = append(flags, fmt.Sprintf("MediaType=%s", opts.MediaType))
+	}
+	if opts.InputTray != "" && opts.InputTray != "Auto Select" {
+		flags = append(flags, fmt.Sprintf("InputSlot=%s", opts.InputTray))
+	}
+	if opts.Borderless {
+		flags = append(flags, "PageSize="+normalizeMediaPPD(opts.Media)+".Borderless")
+	}
+	if opts.Booklet {
+		flags = append(flags, "booklet=true")
+	}
+	if opts.ManualDuplex {
+		if opts.DuplexStep == "odd" {
+			flags = append(flags, "page-set=odd")
+		} else if opts.DuplexStep == "even" {
+			flags = append(flags, "page-set=even", "outputorder=reverse")
+		}
+	}
 	if opts.PageRange != "" {
 		// lp -P accepts CUPS page-ranges format: "1", "1-5", "1,3,5-7"
 		flags = append(flags, fmt.Sprintf("page-ranges=%s", normalizePageRange(opts.PageRange)))
@@ -553,4 +607,59 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 		}
 	}
 	return jobID, nil
+}
+
+// PPDOption is an introspected CUPS PPD printer option.
+type PPDOption struct {
+	Name    string   `json:"name"`
+	Label   string   `json:"label"`
+	Default string   `json:"default"`
+	Values  []string `json:"values"`
+}
+
+// SSHGetPPDOptions parses native PPD options via `lpoptions -p <printer> -l`.
+func SSHGetPPDOptions(userHost, printerName string) ([]PPDOption, error) {
+	out, err := sshRun(userHost, fmt.Sprintf("lpoptions -p %s -l 2>/dev/null", shellQuote(printerName)), nil)
+	if err != nil {
+		return nil, err
+	}
+	var options []PPDOption
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, ":") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		header := strings.TrimSpace(parts[0])
+		valsPart := strings.TrimSpace(parts[1])
+
+		name := header
+		label := header
+		if strings.Contains(header, "/") {
+			hParts := strings.SplitN(header, "/", 2)
+			name = strings.TrimSpace(hParts[0])
+			label = strings.TrimSpace(hParts[1])
+		}
+
+		rawVals := strings.Fields(valsPart)
+		var values []string
+		defVal := ""
+		for _, v := range rawVals {
+			if strings.HasPrefix(v, "*") {
+				cleanVal := strings.TrimPrefix(v, "*")
+				defVal = cleanVal
+				values = append(values, cleanVal)
+			} else {
+				values = append(values, v)
+			}
+		}
+
+		options = append(options, PPDOption{
+			Name:    name,
+			Label:   label,
+			Default: defVal,
+			Values:  values,
+		})
+	}
+	return options, nil
 }

@@ -20,14 +20,23 @@ type PrinterInfo struct {
 
 // JobOptions maps print options to IPP job attributes.
 type JobOptions struct {
-	Media     string // A4, Letter, ...
-	Sides     string // one-sided | two-sided-long-edge
-	Copies    int
-	ColorMode string // color | monochrome
-	Quality   string // draft | normal | high
-	JobName   string
-	FileType  string // application/pdf, image/png, text/plain, ...
-	PageRange string // e.g. "1", "1-5", "1,3,5-7" (empty = all pages)
+	Media        string // A4, Letter, ...
+	Sides        string // one-sided | two-sided-long-edge
+	Copies       int
+	ColorMode    string // color | monochrome
+	Quality      string // draft | normal | high
+	JobName      string
+	FileType     string // application/pdf, image/png, text/plain, ...
+	PageRange    string // e.g. "1", "1-5", "1,3,5-7" (empty = all pages)
+	NUp          int    // 1, 2, 4, 6, 9, 16
+	Collate      bool   // collated vs uncollated
+	MediaType    string // Plain, Photo, Glossy, Matte, Envelope...
+	InputTray    string // Main, Rear, Manual, Auto...
+	Borderless   bool   // true = full bleed photo
+	Booklet      bool   // true = saddle-stitch booklet imposition
+	Watermark    string // custom watermark text
+	ManualDuplex bool   // true = manual odd/even duplex flow
+	DuplexStep   string // "odd" | "even"
 }
 
 // NormalizeHost strips scheme/path from a CUPS URL -> "host:port".

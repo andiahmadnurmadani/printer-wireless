@@ -131,12 +131,15 @@ graph TB
 - [x] Deteksi sensor perangkat: *Paper Jam*, *Cover Open*, *Out of Paper*, *Low Ink*.
 - [x] Pusat Diagnostik Interaktif (**Maintenance & Health Center Modal** di UI).
 
-### 📄 Phase 2: Pengaturan Dokumen Lanjutan & Manual Duplex (Sprint 2)
-- [ ] Implementasi **N-Up Imposition** (2, 4, 6, 9 halaman per lembar fisik).
-- [ ] Fitur **Manual Duplex Assistant** dengan panduan visual ganjil $\rightarrow$ balik kertas $\rightarrow$ genap.
-- [ ] Opsi **Collate** (1-2-3 vs 1-1-2-2-3-3).
-- [ ] Opsi **Borderless Photo Printing** (A4 & 4x6).
-- [ ] Dropdown dinamis jenis media kertas (*Glossy, Matte, Envelope, Label*).
+### 📄 Phase 2: Pengaturan Dokumen Lanjutan, Imposisi & Dynamic PPD (Sprint 2) — ✅ COMPLETED
+- [x] Implementasi **N-Up Imposition** (2, 4, 6, 9, 16 halaman per lembar fisik) dengan rendering kisi multi-pane real-time.
+- [x] Fitur **Manual Duplex Assistant** dengan alur interaktif ganjil $\rightarrow$ panduan balik kertas 180° $\rightarrow$ cetak genap reverse order.
+- [x] Opsi **Collate** (1-2-3 vs 1-1-2-2-3-3).
+- [x] Opsi **Borderless Photo Printing** (A4 & 4x6).
+- [x] Fitur **Booklet Printing** (imposisi saddle-stitch lipat tengah).
+- [x] Dropdown dinamis jenis media kertas (*Plain High, Glossy, Matte, Envelope, Label*).
+- [x] Fitur **Watermark & Security Stamp** (preset DRAFT, CONFIDENTIAL, LUNAS + custom text) terpasang miring 45°.
+- [x] Dynamic **PPD Introspection Engine** via `GET /api/printers/:id/ppd-options` mem-parsing opsi driver native CUPS secara real-time.
 
 ### ⚡ Phase 3: Real-Time WebSocket & Robust Queue Concurrency (Sprint 3)
 - [ ] Implementasi **WebSocket Hub** di backend Go untuk broadcast status job instan.

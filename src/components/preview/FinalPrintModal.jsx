@@ -24,6 +24,8 @@ export default function FinalPrintModal({
   copies,
   quality,
   scaling,
+  nUp = 1,
+  watermark = '',
   selectedPrinter,
   onSubmitJob,
 }) {
@@ -285,11 +287,54 @@ export default function FinalPrintModal({
                   style={visualFilter}
                   className={`w-full h-full flex-1 flex items-center justify-center relative overflow-hidden bg-white ${scalingStyles.wrapperClass}`}
                 >
+                  {/* Watermark Overlay */}
+                  {watermark && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 overflow-hidden select-none">
+                      <span
+                        className="font-figtree font-black uppercase text-dark-black-900/20 tracking-widest text-[46px] md:text-[68px] -rotate-45 whitespace-nowrap"
+                        style={{ letterSpacing: '0.2em' }}
+                      >
+                        {watermark}
+                      </span>
+                    </div>
+                  )}
+
                   <div
                     style={{ transform: scalingStyles.transform }}
                     className="w-full h-full flex items-center justify-center transition-transform duration-200"
                   >
-                    {isPdf ? (
+                    {nUp > 1 ? (
+                      /* N-Up Multi-Page Grid Simulation */
+                      <div
+                        className={`w-full h-full p-4 grid gap-3 items-center justify-center ${
+                          nUp === 2 ? 'grid-cols-2' : nUp === 4 ? 'grid-cols-2 grid-rows-2' : nUp === 6 ? 'grid-cols-3 grid-rows-2' : nUp === 9 ? 'grid-cols-3 grid-rows-3' : 'grid-cols-4 grid-rows-4'
+                        }`}
+                      >
+                        {Array.from({ length: nUp }).map((_, idx) => {
+                          const subPage = (activePage - 1) * nUp + idx + 1
+                          return (
+                            <div
+                              key={idx}
+                              className="w-full h-full border-2 border-dark-black-900/30 rounded-[4px] bg-vanilla-100 p-2 flex flex-col justify-between overflow-hidden shadow-xs"
+                            >
+                              <div className="flex justify-between font-geist text-[9px] text-dark-black-900/60 font-semibold">
+                                <span>Page {subPage}</span>
+                                <span>{subPage <= totalPages ? 'Available' : 'Blank'}</span>
+                              </div>
+                              <div className="w-full h-full flex flex-col gap-1.5 my-auto justify-center px-2">
+                                <div className="w-3/4 h-2 bg-dark-black-900/40 rounded-[2px]" />
+                                <div className="w-full h-1 bg-dark-black-900/20 rounded-[1px]" />
+                                <div className="w-5/6 h-1 bg-dark-black-900/20 rounded-[1px]" />
+                                <div className="w-2/3 h-1 bg-dark-black-900/20 rounded-[1px]" />
+                              </div>
+                              <div className="text-[8px] font-geist text-dark-black-900/40 text-center font-medium">
+                                {nUp}-Up Grid Sheet
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : isPdf ? (
                       <canvas ref={canvasRef} className="w-full h-full object-contain pointer-events-none" />
                     ) : isImage && imgUrl ? (
                       <img

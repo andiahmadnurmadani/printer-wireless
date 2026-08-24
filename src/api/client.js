@@ -61,6 +61,7 @@ export const api = {
   disablePrinter: (id) => request(`/api/printers/${id}/disable`, { method: 'POST' }),
   setDefaultPrinter: (id) => request(`/api/printers/${id}/default`, { method: 'POST' }),
   getPrinterHealth: (id) => request(`/api/printers/${id}/health`),
+  getPPDOptions: (id) => request(`/api/printers/${id}/ppd-options`),
   cleanHead: (id) => request(`/api/printers/${id}/maintenance/clean-head`, { method: 'POST' }),
   nozzleCheck: (id) => request(`/api/printers/${id}/maintenance/nozzle-check`, { method: 'POST' }),
 

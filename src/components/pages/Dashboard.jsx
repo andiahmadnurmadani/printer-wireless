@@ -49,12 +49,20 @@ export default function Dashboard({ onNavigate }) {
             Welcome back, Andi. Here&apos;s what&apos;s happening with your printers.
           </p>
         </div>
-        <button
-          onClick={refreshAll}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 transition-all duration-200 font-figtree font-semibold text-[13.5px] text-dark-black-900 cursor-pointer"
-        >
-          <IconRefresh size={16} /> Refresh All
-        </button>
+        <div className="flex gap-2.5 items-center flex-wrap">
+          <button
+            onClick={() => onNavigate('print')}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
+          >
+            <IconPrinter size={16} /> Print & Scan Studio
+          </button>
+          <button
+            onClick={refreshAll}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-all font-figtree font-semibold text-[13.5px] text-dark-black-900 cursor-pointer"
+          >
+            <IconRefresh size={16} /> Refresh All
+          </button>
+        </div>
       </div>
 
       {/* Stats grid */}

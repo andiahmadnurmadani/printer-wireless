@@ -6,13 +6,14 @@ import Modal from '../ui/Modal'
 import { FileTypeBadge } from '../ui/Badges'
 import {
   IconUpload, IconFile, IconImage, IconTxt, IconCheck, IconPrinter,
-  IconChevronDown, IconEye, IconRefresh, IconAlert, IconWrench, IconDroplet,
+  IconChevronDown, IconEye, IconRefresh, IconAlert, IconWrench, IconDroplet, IconCamera,
 } from '../ui/icons'
 import { getPaperDimensions, PAPER_SIZES } from '../../utils/paperDimensions'
 import { loadPdfDocument } from '../../utils/pdfHelper'
 import PrintSheetPreview from '../preview/PrintSheetPreview'
 import PageThumbnails from '../preview/PageThumbnails'
 import FinalPrintModal from '../preview/FinalPrintModal'
+import CameraScanModal from '../scanner/CameraScanModal'
 
 function Select({ label, value, onChange, options, hint }) {
   return (
@@ -101,6 +102,9 @@ export default function PrintPage({ onNavigate }) {
   const [pageCount, setPageCount] = useState(1)
   const [currentPage, setCurrentPage] = useState(1)
   const [isFlipped, setIsFlipped] = useState(false)
+  const [loadingPdf, setLoadingPdf] = useState(false)
+  const [finalModalOpen, setFinalModalOpen] = useState(false)
+  const [cameraModalOpen, setCameraModalOpen] = useState(false)
 
   // Domain 2 & 3: Advanced Layout, Imposition, Media & PPD States
   const [nUp, setNUp] = useState(1)
@@ -123,10 +127,6 @@ export default function PrintPage({ onNavigate }) {
 
   // PDF Document object from pdfjs
   const [pdfDoc, setPdfDoc] = useState(null)
-  const [loadingPdf, setLoadingPdf] = useState(false)
-
-  // Final Print Inspection modal state
-  const [finalModalOpen, setFinalModalOpen] = useState(false)
 
   // Fallback / Auto-sync printerId & PPD Introspection
   useEffect(() => {
@@ -445,6 +445,20 @@ export default function PrintPage({ onNavigate }) {
                 {['PDF', 'PNG', 'JPG', 'TXT', 'DOCX', 'XLSX', 'CSV'].map((t) => (
                   <FileTypeBadge key={t} type={t} />
                 ))}
+              </div>
+
+              {/* Domain 6: Mobile & Camera Document Scanner */}
+              <div className="flex items-center gap-3 mt-6 pt-4 border-t border-dark-black-900/15">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setCameraModalOpen(true)
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
+                >
+                  <IconCamera size={18} /> Scan Document with Camera
+                </button>
               </div>
             </div>
           ) : (
@@ -1147,6 +1161,16 @@ export default function PrintPage({ onNavigate }) {
           )}
         </div>
       </Modal>
+
+      {/* ── Mobile & Camera Document Scanner Modal (Domain 6) ── */}
+      <CameraScanModal
+        open={cameraModalOpen}
+        onClose={() => setCameraModalOpen(false)}
+        onScanComplete={(scannedFile) => {
+          setFile(scannedFile)
+          toast('Dokumen hasil scan kamera berhasil dimuat ke Print Studio!', 'ok')
+        }}
+      />
     </div>
   )
 }

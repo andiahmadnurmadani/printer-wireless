@@ -11,6 +11,8 @@ build/
 backend/*.exe
 backend/kroomprint
 backend/backend
+backend/kroomprint-api
+backend/kroomprint-backend
 
 # Uploads & temp files
 backend/uploads/

@@ -60,6 +60,9 @@ export const api = {
   enablePrinter: (id) => request(`/api/printers/${id}/enable`, { method: 'POST' }),
   disablePrinter: (id) => request(`/api/printers/${id}/disable`, { method: 'POST' }),
   setDefaultPrinter: (id) => request(`/api/printers/${id}/default`, { method: 'POST' }),
+  getPrinterHealth: (id) => request(`/api/printers/${id}/health`),
+  cleanHead: (id) => request(`/api/printers/${id}/maintenance/clean-head`, { method: 'POST' }),
+  nozzleCheck: (id) => request(`/api/printers/${id}/maintenance/nozzle-check`, { method: 'POST' }),
 
   // Discovery
   scan: () => request('/api/discovery/scan', { method: 'POST' }),

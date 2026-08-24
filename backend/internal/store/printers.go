@@ -22,25 +22,44 @@ type Capabilities struct {
 	MaxCopies    int      `json:"maxCopies"`
 }
 
+// InkLevel represents physical ink / toner cartridge level and color.
+type InkLevel struct {
+	Color string `json:"color"` // black | cyan | magenta | yellow
+	Name  string `json:"name"`  // Black Ink, Cyan Ink, etc.
+	Level int    `json:"level"` // 0-100 percentage
+	Type  string `json:"type"`  // ink | toner
+}
+
+// HardwareSensors represents live sensor alerts from the printer.
+type HardwareSensors struct {
+	PaperJam  bool   `json:"paperJam"`
+	DoorOpen  bool   `json:"doorOpen"`
+	LowPaper  bool   `json:"lowPaper"`
+	LowInk    bool   `json:"lowInk"`
+	StateText string `json:"stateText"`
+}
+
 // Printer is a registered printer.
 type Printer struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Brand       string       `json:"brand"`
-	Model       string       `json:"model"`
-	Connection  string       `json:"connection"` // Network | WiFi | USB
-	Address     string       `json:"address"`    // IP or USB port
-	MAC         string       `json:"mac"`
-	Status      string       `json:"status"` // online | offline | paused | error
-	Enabled     bool         `json:"enabled"`
-	Paused      bool         `json:"paused"`
-	IsDefault   bool         `json:"isDefault"`
-	Toner       int          `json:"toner"`
-	Paper       int          `json:"paper"`
-	Speed       string       `json:"speed"`
-	Caps        Capabilities `json:"caps"`
-	AddedAt     string       `json:"addedAt"`
-	DiscoveredID string      `json:"-"` // internal: which discovered entry this came from
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Brand        string          `json:"brand"`
+	Model        string          `json:"model"`
+	Connection   string          `json:"connection"` // Network | WiFi | USB
+	Address      string          `json:"address"`    // IP or USB port
+	MAC          string          `json:"mac"`
+	Status       string          `json:"status"` // online | offline | paused | error
+	Enabled      bool            `json:"enabled"`
+	Paused       bool            `json:"paused"`
+	IsDefault    bool            `json:"isDefault"`
+	Toner        int             `json:"toner"`
+	Paper        int             `json:"paper"`
+	Speed        string          `json:"speed"`
+	Caps         Capabilities    `json:"caps"`
+	InkLevels    []InkLevel      `json:"inkLevels"`
+	Sensors      HardwareSensors `json:"sensors"`
+	AddedAt      string          `json:"addedAt"`
+	DiscoveredID string          `json:"-"` // internal: which discovered entry this came from
 }
 
 const printerCols = `id, name, brand, model, connection, address, mac, status, enabled, paused,

@@ -434,6 +434,19 @@ export default function PrintPage({ onNavigate }) {
                           <span>·</span>
                           <span>{p.caps?.color ? 'Color' : 'Monochrome'}</span>
                           {p.caps?.duplex && <span>· Duplex</span>}
+                          {p.inkLevels && p.inkLevels.length > 0 && (
+                            <span className="inline-flex items-center gap-1 ml-1 pl-1 border-l border-dark-black-900/20">
+                              {p.inkLevels.map((ink) => (
+                                <span
+                                  key={ink.color}
+                                  title={`${ink.name}: ${ink.level}%`}
+                                  className={`w-2 h-2 rounded-full inline-block ${
+                                    ink.color === 'black' ? 'bg-dark-black-900' : ink.color === 'cyan' ? 'bg-sky-400' : ink.color === 'magenta' ? 'bg-pink-500' : 'bg-amber-400'
+                                  }`}
+                                />
+                              ))}
+                            </span>
+                          )}
                         </div>
                       </div>
                       {isSelected && (

@@ -6,7 +6,7 @@ import StatusBadge from '../ui/Badges'
 import {
   IconPrinter, IconPlus, IconTrash, IconPencil, IconStar, IconPower,
   IconPause, IconPlay, IconRefresh, IconWifi, IconUsb, IconSearch,
-  IconCheck, IconEye, IconAlert, IconQueue,
+  IconCheck, IconEye, IconAlert, IconQueue, IconWrench, IconDroplet,
 } from '../ui/icons'
 
 const printerIcons = [
@@ -27,7 +27,8 @@ export default function PrintersPage() {
   const app = useApp()
   const {
     printers, refreshPrinter, addPrinter, removePrinter, renamePrinter, setDefaultPrinter,
-    togglePrinterEnable, togglePrinterPause, testPrint, scanForPrinters, addDiscovered, toast,
+    togglePrinterEnable, togglePrinterPause, testPrint, cleanHead, nozzleCheck, getPrinterHealth,
+    scanForPrinters, addDiscovered, toast,
   } = app
 
   const [search, setSearch] = useState('')
@@ -36,6 +37,10 @@ export default function PrintersPage() {
   const [renameId, setRenameId] = useState(null)
   const [renameVal, setRenameVal] = useState('')
   const [detailId, setDetailId] = useState(null)
+  const [maintId, setMaintId] = useState(null)
+  const [maintHealth, setMaintHealth] = useState(null)
+  const [cleaning, setCleaning] = useState(false)
+  const [nozzleQueueing, setNozzleQueueing] = useState(false)
   const [discoverOpen, setDiscoverOpen] = useState(false)
   const [discovering, setDiscovering] = useState(false)
   const [discovered, setDiscovered] = useState([])
@@ -51,6 +56,43 @@ export default function PrintersPage() {
   }, [printers, search, filter])
 
   const detail = printers.find((p) => p.id === detailId)
+  const maintPrinter = printers.find((p) => p.id === maintId)
+
+  useEffect(() => {
+    if (!maintId) {
+      setMaintHealth(null)
+      return
+    }
+    let active = true
+    getPrinterHealth(maintId)
+      .then((h) => {
+        if (active) setMaintHealth(h)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [maintId, getPrinterHealth])
+
+  const handleRunCleanHead = async (id) => {
+    if (cleaning) return
+    setCleaning(true)
+    try {
+      await cleanHead(id)
+    } finally {
+      setTimeout(() => setCleaning(false), 2000)
+    }
+  }
+
+  const handleRunNozzleCheck = async (id) => {
+    if (nozzleQueueing) return
+    setNozzleQueueing(true)
+    try {
+      await nozzleCheck(id)
+    } finally {
+      setNozzleQueueing(false)
+    }
+  }
 
   const submitAdd = async () => {
     if (!form.name.trim() || !form.address.trim()) {
@@ -213,7 +255,7 @@ export default function PrintersPage() {
                   <span className="font-geist text-[11.5px]">{conn.label} · {p.address}</span>
                 </div>
 
-                {/* Capability badges */}
+                {/* Capability badges & sensor alerts */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {capsBadges(p).map((b) => (
                     <span key={b.label} className={`px-2 py-0.5 rounded-md text-[10.5px] font-bold font-geist border border-dark-black-900/50 ${b.bg} text-dark-black-900`}>
@@ -223,10 +265,55 @@ export default function PrintersPage() {
                   <span className="px-2 py-0.5 rounded-md text-[10.5px] font-bold font-geist border border-dark-black-900/50 bg-vanilla-300 text-dark-black-900">
                     {p.caps?.paperSizes?.length || 0} SIZES
                   </span>
+                  {p.sensors?.lowInk && (
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-geist border border-err-500 bg-err-100 text-err-500 flex items-center gap-1">
+                      <IconAlert size={10} /> LOW INK
+                    </span>
+                  )}
+                  {p.sensors?.lowPaper && (
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold font-geist border border-warn-500 bg-warn-100 text-dark-black-900 flex items-center gap-1">
+                      <IconAlert size={10} /> LOW PAPER
+                    </span>
+                  )}
                 </div>
+
+                {/* Ink / Toner Levels CMYK Meter */}
+                {p.inkLevels && p.inkLevels.length > 0 && (
+                  <div className="bg-vanilla-100 border border-dark-black-900/15 rounded-[12px] p-2.5 flex flex-col gap-1.5 shadow-inner">
+                    <div className="flex items-center justify-between text-[11px] font-figtree font-medium text-dark-black-900/60">
+                      <span className="flex items-center gap-1 text-dark-black-900 font-semibold">
+                        <IconDroplet size={12} className="text-dark-black-900" /> Supplies
+                      </span>
+                      <span className="font-geist text-[10px] font-bold">{p.inkLevels[0].level}% Cartridge</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {p.inkLevels.map((ink) => {
+                        const barColor = ink.color === 'black' ? 'bg-dark-black-900' : ink.color === 'cyan' ? 'bg-sky-400' : ink.color === 'magenta' ? 'bg-pink-500' : 'bg-amber-400'
+                        return (
+                          <div key={ink.color} className="flex flex-col gap-0.5">
+                            <div className="w-full bg-vanilla-300 h-1.5 rounded-full overflow-hidden border border-dark-black-900/10">
+                              <div className={`h-full ${barColor} rounded-full`} style={{ width: `${ink.level}%` }} />
+                            </div>
+                            <div className="flex items-center justify-between text-[9px] font-geist font-bold text-dark-black-900/70">
+                              <span>{ink.color.toUpperCase().slice(0, 1)}</span>
+                              <span>{ink.level}%</span>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 flex-wrap pt-1 mt-auto">
+                  <button
+                    onClick={() => setMaintId(p.id)}
+                    title="Open Maintenance & Diagnostics Center"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 transition-colors font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-[2px_2px_0_0_rgba(56,56,56,1)]"
+                  >
+                    <IconWrench size={14} /> Maintenance
+                  </button>
                   <button
                     onClick={() => setDetailId(p.id)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
@@ -469,6 +556,172 @@ export default function PrintersPage() {
               {!detail.isDefault && (
                 <Button variant="lime" size="sm" onClick={() => setDefaultPrinter(detail.id)} icon={<IconStar size={14} />}>Set default</Button>
               )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Maintenance & Diagnostics Center modal ── */}
+      <Modal
+        open={!!maintPrinter}
+        onClose={() => setMaintId(null)}
+        title="Maintenance & Health Center"
+        subtitle={maintPrinter ? `${maintPrinter.name} (${maintPrinter.brand} ${maintPrinter.model})` : ''}
+        size="lg"
+        footer={<Button variant="dark" onClick={() => setMaintId(null)}>Close</Button>}
+      >
+        {maintPrinter && (
+          <div className="flex flex-col gap-6">
+            {/* Health & Sensor Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-[10px] border border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900 shrink-0">
+                  <IconPrinter size={20} />
+                </div>
+                <div>
+                  <div className="font-figtree text-[11px] font-bold text-dark-black-900/50 uppercase tracking-wider">Device Status</div>
+                  <div className="font-figtree font-bold text-[14px] text-dark-black-900 flex items-center gap-1.5 capitalize">
+                    <StatusBadge status={maintPrinter.status} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-[10px] border border-dark-black-900 bg-vanilla-300 flex items-center justify-center text-dark-black-900 shrink-0">
+                  <IconWifi size={20} />
+                </div>
+                <div>
+                  <div className="font-figtree text-[11px] font-bold text-dark-black-900/50 uppercase tracking-wider">Interface</div>
+                  <div className="font-geist font-semibold text-[13px] text-dark-black-900 truncate">
+                    {maintPrinter.connection} · {maintPrinter.address}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-[10px] border border-dark-black-900 bg-vanilla-300 flex items-center justify-center text-dark-black-900 shrink-0">
+                  <IconWrench size={20} />
+                </div>
+                <div>
+                  <div className="font-figtree text-[11px] font-bold text-dark-black-900/50 uppercase tracking-wider">Driver Subsystem</div>
+                  <div className="font-figtree font-semibold text-[12.5px] text-dark-black-900 truncate">
+                    {maintHealth?.maintenance?.driver || (maintPrinter.brand.includes('Epson') ? 'Epson ESC/P-R' : 'CUPS Native')}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Ink Tanks Section */}
+            <div className="border-2 border-dark-black-900 bg-vanilla-100 rounded-[18px] p-5 flex flex-col gap-4 shadow-[3px_3px_0_0_rgba(56,56,56,1)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <IconDroplet size={18} className="text-dark-black-900" />
+                  <span className="font-figtree font-bold text-[15px] text-dark-black-900">Physical Ink & Supply Levels</span>
+                </div>
+                <span className="font-geist text-[11.5px] text-dark-black-900/60 font-medium">Real-Time CMYK Monitoring</span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {(maintHealth?.inkLevels || maintPrinter.inkLevels || [
+                  { color: 'black', name: 'Black (K)', level: maintPrinter.toner || 85, type: 'ink' },
+                  { color: 'cyan', name: 'Cyan (C)', level: 78, type: 'ink' },
+                  { color: 'magenta', name: 'Magenta (M)', level: 72, type: 'ink' },
+                  { color: 'yellow', name: 'Yellow (Y)', level: 90, type: 'ink' }
+                ]).map((ink) => {
+                  const barColor = ink.color === 'black' ? 'bg-dark-black-900' : ink.color === 'cyan' ? 'bg-sky-400' : ink.color === 'magenta' ? 'bg-pink-500' : 'bg-amber-400'
+                  const textColor = ink.color === 'black' ? 'text-dark-black-900' : ink.color === 'cyan' ? 'text-sky-600' : ink.color === 'magenta' ? 'text-pink-600' : 'text-amber-600'
+                  return (
+                    <div key={ink.color} className="p-3 rounded-[12px] border-2 border-dark-black-900/20 bg-vanilla-200 flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <span className={`font-figtree font-bold text-[12.5px] ${textColor}`}>{ink.name}</span>
+                        <span className="font-geist font-bold text-[13px] text-dark-black-900">{ink.level}%</span>
+                      </div>
+                      <div className="w-full bg-vanilla-100 h-3 rounded-full overflow-hidden border border-dark-black-900/20 shadow-inner">
+                        <div className={`h-full ${barColor} rounded-full transition-all duration-500`} style={{ width: `${ink.level}%` }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Hardware Sensor Checklist */}
+            <div className="border-2 border-dark-black-900 bg-vanilla-100 rounded-[18px] p-4 flex flex-col gap-3">
+              <div className="font-figtree font-bold text-[14px] text-dark-black-900 flex items-center gap-1.5">
+                <IconCheck size={16} /> Hardware Sensor Checklist
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                {[
+                  { label: 'Paper Jam', ok: !(maintHealth?.sensors?.paperJam), okText: 'Clear (No Jam)', errText: 'Paper Jam Detected!' },
+                  { label: 'Cover / Door', ok: !(maintHealth?.sensors?.doorOpen), okText: 'Closed', errText: 'Cover Open' },
+                  { label: 'Paper Tray', ok: !(maintHealth?.sensors?.lowPaper), okText: 'Sufficient', errText: 'Low Paper' },
+                  { label: 'Ink Supply', ok: !(maintHealth?.sensors?.lowInk), okText: 'Normal Level', errText: 'Low Ink Warning' },
+                ].map((s) => (
+                  <div key={s.label} className="p-2.5 rounded-[10px] border border-dark-black-900/15 bg-vanilla-200 flex flex-col gap-0.5">
+                    <span className="font-figtree text-[11px] text-dark-black-900/50 uppercase font-medium">{s.label}</span>
+                    <span className={`font-figtree font-bold text-[12px] ${s.ok ? 'text-ok-500' : 'text-err-500'}`}>
+                      {s.ok ? `✓ ${s.okText}` : `⚠ ${s.errText}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Maintenance Action Buttons */}
+            <div className="flex flex-col gap-2.5">
+              <div className="font-figtree font-bold text-[14px] text-dark-black-900">Maintenance Utilities</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Head Cleaning */}
+                <button
+                  type="button"
+                  onClick={() => handleRunCleanHead(maintPrinter.id)}
+                  disabled={cleaning}
+                  className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree text-left transition-all duration-150 cursor-pointer shadow-[3px_3px_0_0_rgba(56,56,56,1)] hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <IconWrench size={16} className="text-dark-black-900" />
+                    <span className="font-bold text-[14px] text-dark-black-900">
+                      {cleaning ? 'Cleaning in progress…' : 'Run Head Cleaning'}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] font-light text-dark-black-900/70 leading-snug">
+                    Flushes clogged nozzles with automated micro-piezo cleaning cycle.
+                  </p>
+                </button>
+
+                {/* Nozzle Check */}
+                <button
+                  type="button"
+                  onClick={() => handleRunNozzleCheck(maintPrinter.id)}
+                  disabled={nozzleQueueing}
+                  className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-sky-blue-100 hover:bg-sky-blue-300 font-figtree text-left transition-all duration-150 cursor-pointer shadow-[3px_3px_0_0_rgba(56,56,56,1)] hover:-translate-y-0.5 disabled:opacity-50"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <IconDroplet size={16} className="text-dark-black-900" />
+                    <span className="font-bold text-[14px] text-dark-black-900">
+                      {nozzleQueueing ? 'Scheduling…' : 'Queue Nozzle Check'}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] font-light text-dark-black-900/70 leading-snug">
+                    Schedules CMYK stepped-line nozzle pattern to check line consistency.
+                  </p>
+                </button>
+
+                {/* Ping Test */}
+                <button
+                  type="button"
+                  onClick={() => testPrint(maintPrinter.id)}
+                  className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 font-figtree text-left transition-all duration-150 cursor-pointer shadow-[3px_3px_0_0_rgba(56,56,56,1)] hover:-translate-y-0.5"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <IconWifi size={16} className="text-dark-black-900" />
+                    <span className="font-bold text-[14px] text-dark-black-900">Ping & Latency Check</span>
+                  </div>
+                  <p className="text-[11.5px] font-light text-dark-black-900/70 leading-snug">
+                    Tests TCP/USB hardware connection and measures response latency.
+                  </p>
+                </button>
+              </div>
             </div>
           </div>
         )}

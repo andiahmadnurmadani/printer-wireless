@@ -159,6 +159,42 @@ export function AppProvider({ children }) {
     }
   }, [printers, toast])
 
+  const cleanHead = useCallback(async (id) => {
+    const p = printers.find((x) => x.id === id)
+    try {
+      const res = await api.cleanHead(id)
+      toast(res?.message || `Proses pembersihan printhead ${p?.name || 'printer'} berhasil dimulai`, 'success')
+      return res
+    } catch (e) {
+      toast(`Gagal menjalankan head cleaning: ${e.message}`, 'error')
+      throw e
+    }
+  }, [printers, toast])
+
+  const nozzleCheck = useCallback(async (id) => {
+    const p = printers.find((x) => x.id === id)
+    try {
+      const res = await api.nozzleCheck(id)
+      toast(res?.message || `Pola Nozzle Check untuk ${p?.name || 'printer'} telah ditambahkan ke antrean`, 'success')
+      if (res?.job) {
+        setJobs((list) => [res.job, ...list])
+      }
+      return res
+    } catch (e) {
+      toast(`Gagal membuat Nozzle Check: ${e.message}`, 'error')
+      throw e
+    }
+  }, [printers, toast])
+
+  const getPrinterHealth = useCallback(async (id) => {
+    try {
+      return await api.getPrinterHealth(id)
+    } catch (e) {
+      toast(`Gagal mengambil data kesehatan printer: ${e.message}`, 'error')
+      throw e
+    }
+  }, [toast])
+
   // ── Discovery ──
   const scanForPrinters = useCallback(async () => {
     const res = await api.scan()
@@ -290,6 +326,7 @@ export function AppProvider({ children }) {
       // printers
       refreshPrinter, refreshAll, addPrinter, removePrinter, renamePrinter,
       setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
+      cleanHead, nozzleCheck, getPrinterHealth,
       // discovery
       scanForPrinters, addDiscovered,
       // jobs
@@ -303,6 +340,7 @@ export function AppProvider({ children }) {
       printers, jobs, history, settings, selectedFile, toasts, toast, loading, connected, backendInfo,
       refreshPrinter, refreshAll, addPrinter, removePrinter, renamePrinter,
       setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
+      cleanHead, nozzleCheck, getPrinterHealth,
       scanForPrinters, addDiscovered, submitJob, cancelJob, pauseJob, resumeJob, retryJob,
       reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings,
       defaultPrinter, activeCount, queueCount,

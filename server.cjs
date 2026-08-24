@@ -50,12 +50,23 @@ const server = http.createServer((req, res) => {
 
     fs.readFile(filePath, (readErr, data) => {
       if (readErr) {
+        // If request is for an asset or static file, DO NOT fallback to index.html
+        if (reqPath.startsWith('/assets/') || reqPath.startsWith('/static/') || path.extname(reqPath)) {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('404 Not Found: ' + reqPath);
+          return;
+        }
+
+        // SPA HTML fallback
         fs.readFile(path.join(DIST_DIR, 'index.html'), (spaErr, spaData) => {
           if (spaErr) {
-            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
             res.end('404 Not Found — dist not built or not copied to ' + DIST_DIR);
           } else {
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'no-cache, no-store, must-revalidate'
+            });
             res.end(spaData);
           }
         });
@@ -64,7 +75,15 @@ const server = http.createServer((req, res) => {
 
       const ext = path.extname(filePath).toLowerCase();
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': contentType });
+      const headers = { 'Content-Type': contentType };
+
+      if (ext === '.html') {
+        headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      } else if (reqPath.startsWith('/assets/')) {
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+      }
+
+      res.writeHead(200, headers);
       res.end(data);
     });
   });

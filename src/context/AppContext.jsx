@@ -57,7 +57,28 @@ export function AppProvider({ children }) {
     }
   }, [])
 
-  // ── Live polling (queue + printer status + history) ──
+  // ── Real-Time SSE Event Streaming (Domain 4) ──
+  useEffect(() => {
+    const unsub = api.subscribeEvents((event) => {
+      if (!event) return
+      if (event.type === 'job_created' || event.type === 'job_updated') {
+        const j = event.data || event
+        if (j?.id) {
+          setJobs((list) => {
+            const exists = list.some((x) => x.id === j.id)
+            if (exists) return list.map((x) => (x.id === j.id ? { ...x, ...j } : x))
+            return [j, ...list]
+          })
+        }
+      } else if (event.type === 'job_deleted') {
+        const id = event.data?.id || event.id
+        if (id) setJobs((list) => list.filter((x) => x.id !== id))
+      }
+    })
+    return () => unsub()
+  }, [])
+
+  // ── Live polling (queue + printer status + history) with adaptive intervals ──
   useEffect(() => {
     let timer
     let active = true
@@ -271,6 +292,43 @@ export function AppProvider({ children }) {
     toast('Job retried — added to queue', 'success')
   }, [toast])
 
+  const releaseSecureJob = useCallback(async (id, pin) => {
+    try {
+      const res = await api.releaseSecureJob(id, pin)
+      toast(res.message || 'Job released', 'success')
+      const js = await api.listJobs()
+      setJobs(js)
+      return res
+    } catch (e) {
+      toast(`Gagal melepas dokumen: ${e.message}`, 'error')
+      throw e
+    }
+  }, [toast])
+
+  const rerouteJob = useCallback(async (id, targetPrinterId) => {
+    try {
+      const res = await api.rerouteJob(id, targetPrinterId)
+      toast(res.message || 'Job rerouted', 'success')
+      const js = await api.listJobs()
+      setJobs(js)
+      return res
+    } catch (e) {
+      toast(`Gagal mengalihkan printer: ${e.message}`, 'error')
+      throw e
+    }
+  }, [toast])
+
+  const purgeJob = useCallback(async (id) => {
+    try {
+      await api.purgeJob(id)
+      setJobs((list) => list.filter((j) => j.id !== id))
+      toast('Spool file and job purged', 'info')
+    } catch (e) {
+      toast(`Gagal menghapus job: ${e.message}`, 'error')
+      throw e
+    }
+  }, [toast])
+
   const reorderQueue = useCallback(async (dragId, targetId) => {
     setJobs((list) => {
       const drag = list.find((j) => j.id === dragId)
@@ -317,7 +375,7 @@ export function AppProvider({ children }) {
   // ── Derived ──
   const defaultPrinter = useMemo(() => printers.find((p) => p.isDefault) || printers[0], [printers])
   const activeCount = useMemo(() => printers.filter((p) => p.status === 'online' && p.enabled).length, [printers])
-  const queueCount = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused'].includes(j.status)).length, [jobs])
+  const queueCount = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused', 'held-secure'].includes(j.status)).length, [jobs])
 
   const value = useMemo(
     () => ({
@@ -330,7 +388,7 @@ export function AppProvider({ children }) {
       // discovery
       scanForPrinters, addDiscovered,
       // jobs
-      submitJob, cancelJob, pauseJob, resumeJob, retryJob, reorderQueue, setJobPriority, clearQueue,
+      submitJob, cancelJob, pauseJob, resumeJob, retryJob, releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue,
       // history & settings
       clearHistory, updateSettings,
       // derived
@@ -342,7 +400,7 @@ export function AppProvider({ children }) {
       setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
       cleanHead, nozzleCheck, getPrinterHealth,
       scanForPrinters, addDiscovered, submitJob, cancelJob, pauseJob, resumeJob, retryJob,
-      reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings,
+      releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings,
       defaultPrinter, activeCount, queueCount,
     ]
   )

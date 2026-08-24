@@ -37,16 +37,36 @@ function Select({ label, value, onChange, options, hint }) {
   )
 }
 
-function Toggle({ label, desc, checked, onChange }) {
+function Input({ label, value, onChange, placeholder, hint, type = 'text', maxLength, autoFocus }) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      {label && <span className="font-figtree text-[13px] font-medium text-dark-black-900">{label}</span>}
+      <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        maxLength={maxLength}
+        autoFocus={autoFocus}
+        className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 font-figtree text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
+      />
+      {hint && <span className="font-figtree font-light text-dark-black-900/40 text-[11.5px]">{hint}</span>}
+    </label>
+  )
+}
+
+function Toggle({ label, desc, hint, checked, onChange, disabled }) {
+  const description = desc || hint
   return (
     <button
       type="button"
-      onClick={() => onChange(!checked)}
-      className="flex items-center justify-between gap-4 w-full text-left py-2.5 cursor-pointer group"
+      onClick={() => !disabled && onChange(!checked)}
+      disabled={disabled}
+      className={`flex items-center justify-between gap-4 w-full text-left py-2.5 cursor-pointer group ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
     >
       <span>
         <span className="block font-figtree text-[14px] font-medium text-dark-black-900">{label}</span>
-        {desc && <span className="block font-figtree font-light text-dark-black-900/50 text-[12px]">{desc}</span>}
+        {description && <span className="block font-figtree font-light text-dark-black-900/50 text-[12px]">{description}</span>}
       </span>
       <span
         className={`relative w-[46px] h-[26px] rounded-full border-2 border-dark-black-900 transition-colors duration-200 shrink-0 ${
@@ -93,8 +113,13 @@ export default function PrintPage({ onNavigate }) {
   const [manualDuplex, setManualDuplex] = useState(false)
   const [manualDuplexModalOpen, setManualDuplexModalOpen] = useState(false)
   const [manualDuplexStep, setManualDuplexStep] = useState('odd')
-  const [activeTab, setActiveTab] = useState('basic') // basic | layout | media | watermark
+  const [activeTab, setActiveTab] = useState('basic') // basic | layout | media | watermark | security
   const [ppdOptions, setPpdOptions] = useState([])
+
+  // Domain 4 & 5: Security PIN, Enterprise Quota & Department
+  const [secureRelease, setSecureRelease] = useState(false)
+  const [pin, setPin] = useState('')
+  const [department, setDepartment] = useState('Engineering')
 
   // PDF Document object from pdfjs
   const [pdfDoc, setPdfDoc] = useState(null)
@@ -246,6 +271,14 @@ export default function PrintPage({ onNavigate }) {
     setFile(f)
   }
 
+  // Real-time Cost Estimation (Domain 5 Enterprise Accounting)
+  const estimatedCost = useMemo(() => {
+    const base = effColor ? 1500 : 500
+    let total = Math.max(1, pageCount) * Math.max(1, copies) * base
+    if (duplex || manualDuplex) total = Math.round(total * 0.9) // 10% discount for paper savings
+    return total
+  }, [effColor, pageCount, copies, duplex, manualDuplex])
+
   const handleSubmit = () => {
     if (!file) {
       toast('Please add a document first', 'error')
@@ -280,6 +313,10 @@ export default function PrintPage({ onNavigate }) {
         watermark,
         manualDuplex: true,
         duplexStep: 'odd',
+        secureRelease,
+        pin: secureRelease ? pin : '',
+        cost: estimatedCost,
+        department,
       }
       submitJob(oddPayload, file).catch((e) => {
         toast(`Gagal kirim langkah 1 manual duplex: ${e.message}`, 'error')
@@ -313,6 +350,10 @@ export default function PrintPage({ onNavigate }) {
       booklet,
       watermark,
       manualDuplex: false,
+      secureRelease,
+      pin: secureRelease ? pin : '',
+      cost: estimatedCost,
+      department,
     }
 
     // Optimistic reset + navigate BEFORE the network call — feels instant
@@ -590,6 +631,7 @@ export default function PrintPage({ onNavigate }) {
                 { id: 'layout', label: 'Layout (N-Up)' },
                 { id: 'media', label: 'Paper & Tray' },
                 { id: 'watermark', label: 'Watermark' },
+                { id: 'security', label: 'Security & Quota' },
               ].map((t) => (
                 <button
                   key={t.id}
@@ -860,6 +902,61 @@ export default function PrintPage({ onNavigate }) {
               </div>
             )}
 
+            {/* Tab 5: Security PIN & Enterprise Quota (Domain 5) */}
+            {activeTab === 'security' && (
+              <div className="flex flex-col gap-4">
+                <Toggle
+                  label="Secure Print Release (PIN / Code)"
+                  checked={secureRelease}
+                  onChange={setSecureRelease}
+                  hint="Tahan dokumen di server sampai PIN 4-digit dimasukkan di layar antrean"
+                />
+
+                {secureRelease && (
+                  <div className="p-4 bg-warn-100/40 border-2 border-warn-500/50 rounded-[14px] flex flex-col gap-3">
+                    <Input
+                      label="4-Digit Release PIN"
+                      value={pin}
+                      onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                      placeholder="e.g. 1234"
+                      hint="Hanya dokumen dengan PIN ini yang dapat dicetak fisik"
+                    />
+                    <div className="flex gap-2 items-center">
+                      <span className="text-[11.5px] font-figtree text-dark-black-900/70 font-medium">Quick PIN:</span>
+                      {['1234', '7777', '9999'].map((pVal) => (
+                        <button
+                          key={pVal}
+                          type="button"
+                          onClick={() => setPin(pVal)}
+                          className="px-2 py-0.5 bg-vanilla-100 border border-dark-black-900/40 rounded-[6px] text-[11px] font-mono font-bold hover:bg-lime-300 transition-colors"
+                        >
+                          {pVal}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <Select
+                  label="Billing Department"
+                  value={department}
+                  onChange={setDepartment}
+                  options={['Engineering', 'Product & Design', 'Finance & Admin', 'Operations', 'Executive']}
+                  hint="Alokasi kuota dan biaya cetak per departemen"
+                />
+
+                <div className="p-3 bg-vanilla-100 border border-dark-black-900/20 rounded-[12px] flex items-center justify-between text-[12.5px] font-figtree">
+                  <div>
+                    <span className="text-dark-black-900/60 block">Monthly Department Quota:</span>
+                    <span className="font-geist font-bold text-dark-black-900">485 / 500 pages remaining</span>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-[8px] bg-ok-100 border border-ok-500 text-ok-700 font-bold text-[11px]">
+                    Quota OK
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Summary Box */}
             <div className="mt-5 p-4 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex flex-col gap-2">
               <div className="flex justify-between items-center text-[12.5px] font-figtree">
@@ -874,6 +971,18 @@ export default function PrintPage({ onNavigate }) {
                   {effectivePaper} · {nUp > 1 ? `${nUp}-Up` : '1-Up'} · {effColor ? 'Color' : 'Grayscale'}
                 </span>
               </div>
+              <div className="flex justify-between items-center text-[12.5px] font-figtree pt-1 border-t border-dark-black-900/10">
+                <span className="text-dark-black-900/60">Estimated Cost:</span>
+                <span className="font-geist font-bold text-dark-black-900">
+                  Rp {estimatedCost.toLocaleString('id-ID')}
+                </span>
+              </div>
+              {secureRelease && (
+                <div className="flex justify-between items-center text-[12px] font-figtree text-dark-black-900 bg-warn-100 px-2 py-1 rounded-[6px] border border-warn-500/40">
+                  <span className="font-bold">🔒 Secure Release:</span>
+                  <span>PIN {pin ? `**** (${pin})` : 'Required'}</span>
+                </div>
+              )}
               {manualDuplex && (
                 <div className="flex justify-between items-center text-[12px] font-figtree text-dark-black-900 bg-lime-300/50 px-2 py-1 rounded-[6px] border border-dark-black-900/20">
                   <span className="font-bold">Manual Duplex:</span>

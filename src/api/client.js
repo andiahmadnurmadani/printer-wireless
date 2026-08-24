@@ -100,14 +100,53 @@ export const api = {
   pauseJob: (id) => request(`/api/jobs/${id}/pause`, { method: 'POST' }),
   resumeJob: (id) => request(`/api/jobs/${id}/resume`, { method: 'POST' }),
   retryJob: (id) => request(`/api/jobs/${id}/retry`, { method: 'POST' }),
+  releaseSecureJob: (id, pin) => request(`/api/jobs/${id}/release`, { method: 'POST', body: JSON.stringify({ pin }) }),
+  rerouteJob: (id, printerId) => request(`/api/jobs/${id}/reroute`, { method: 'POST', body: JSON.stringify({ printerId }) }),
+  purgeJob: (id) => request(`/api/jobs/${id}/purge`, { method: 'POST' }),
   reorderJobs: (jobIds) => request('/api/jobs/reorder', { method: 'POST', body: JSON.stringify({ jobIds }) }),
   setJobPriority: (id, priority) => request(`/api/jobs/${id}/priority`, { method: 'POST', body: JSON.stringify({ priority }) }),
 
-  // History
+  // History & Analytics
   listHistory: () => request('/api/history'),
   clearHistory: () => request('/api/history', { method: 'DELETE' }),
+  getAnalyticsSummary: () => request('/api/analytics/summary'),
+  getAnalyticsExportUrl: (format = 'csv') => `${BASE}/api/analytics/export?format=${format}`,
 
   // Settings
   getSettings: () => request('/api/settings'),
   putSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
+
+  // Real-Time SSE Streaming
+  subscribeEvents: (onMessage) => {
+    try {
+      const es = new EventSource(`${BASE}/api/events`)
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (onMessage) onMessage(data)
+        } catch {}
+      }
+      es.addEventListener('job_created', (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (onMessage) onMessage({ type: 'job_created', ...data })
+        } catch {}
+      })
+      es.addEventListener('job_updated', (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (onMessage) onMessage({ type: 'job_updated', ...data })
+        } catch {}
+      })
+      es.addEventListener('job_completed', (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (onMessage) onMessage({ type: 'job_completed', ...data })
+        } catch {}
+      })
+      return () => es.close()
+    } catch {
+      return () => {}
+    }
+  },
 }

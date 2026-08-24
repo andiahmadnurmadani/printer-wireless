@@ -138,14 +138,34 @@ CREATE TABLE IF NOT EXISTS settings (
 			_, _ = s.db.Exec("ALTER TABLE discovered ADD COLUMN " + col + " " + def)
 		}
 	}
-	for _, col := range []string{"cups_job_id", "error"} {
+	for _, col := range []string{"cups_job_id", "error", "pin", "secure_release", "cost", "user", "department"} {
 		var cnt int
 		if err := s.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = ?", col).Scan(&cnt); err == nil && cnt == 0 {
 			def := "TEXT"
-			if col == "cups_job_id" {
+			switch col {
+			case "cups_job_id", "secure_release", "cost":
 				def = "INTEGER NOT NULL DEFAULT 0"
+			case "user":
+				def = "TEXT NOT NULL DEFAULT 'Andi Ahmad'"
+			case "department":
+				def = "TEXT NOT NULL DEFAULT 'Engineering'"
 			}
 			_, _ = s.db.Exec("ALTER TABLE jobs ADD COLUMN " + col + " " + def)
+		}
+	}
+	for _, col := range []string{"cost", "user", "department"} {
+		var cnt int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('history') WHERE name = ?", col).Scan(&cnt); err == nil && cnt == 0 {
+			def := "TEXT"
+			switch col {
+			case "cost":
+				def = "INTEGER NOT NULL DEFAULT 0"
+			case "user":
+				def = "TEXT NOT NULL DEFAULT 'Andi Ahmad'"
+			case "department":
+				def = "TEXT NOT NULL DEFAULT 'Engineering'"
+			}
+			_, _ = s.db.Exec("ALTER TABLE history ADD COLUMN " + col + " " + def)
 		}
 	}
 	// Clean up any virtual / software printer artifacts in discovered

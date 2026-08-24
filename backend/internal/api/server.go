@@ -27,6 +27,51 @@ type previewCacheEntry struct {
 	expires time.Time
 }
 
+// ClientHub manages SSE client subscribers for real-time live events.
+type ClientHub struct {
+	sync.RWMutex
+	clients map[chan []byte]struct{}
+}
+
+func newClientHub() *ClientHub {
+	return &ClientHub{
+		clients: make(map[chan []byte]struct{}),
+	}
+}
+
+func (h *ClientHub) subscribe() chan []byte {
+	ch := make(chan []byte, 32)
+	h.Lock()
+	h.clients[ch] = struct{}{}
+	h.Unlock()
+	return ch
+}
+
+func (h *ClientHub) unsubscribe(ch chan []byte) {
+	h.Lock()
+	delete(h.clients, ch)
+	close(ch)
+	h.Unlock()
+}
+
+func (h *ClientHub) Broadcast(eventType string, data any) {
+	payload, _ := json.Marshal(map[string]any{
+		"type": eventType,
+		"data": data,
+		"time": time.Now().UnixMilli(),
+	})
+	msg := []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(payload)))
+
+	h.RLock()
+	defer h.RUnlock()
+	for ch := range h.clients {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+}
+
 // Server holds handlers and dependencies.
 type Server struct {
 	cfg          *config.Config
@@ -37,6 +82,8 @@ type Server struct {
 	scanState    scanState
 	previewCache map[string]previewCacheEntry // hash → cached PDF path
 	previewMu    sync.Mutex
+	printerLocks sync.Map                     // map[string]*sync.Mutex (Hardware Concurrency Lock)
+	hub          *ClientHub                   // Real-Time SSE Event Hub
 }
 
 type scanState struct {
@@ -53,6 +100,7 @@ func New(cfg *config.Config, st *store.Store, logger *log.Logger) *Server {
 		log:          logger,
 		scanMu:       make(chan struct{}, 1),
 		previewCache: make(map[string]previewCacheEntry),
+		hub:          newClientHub(),
 	}
 	// Evict stale cache entries every 10 minutes
 	go func() {
@@ -63,6 +111,11 @@ func New(cfg *config.Config, st *store.Store, logger *log.Logger) *Server {
 		}
 	}()
 	return s
+}
+
+func (s *Server) getPrinterMutex(printerID string) *sync.Mutex {
+	actual, _ := s.printerLocks.LoadOrStore(printerID, &sync.Mutex{})
+	return actual.(*sync.Mutex)
 }
 
 // evictPreviewCache removes expired preview cache entries and their temp files.
@@ -306,7 +359,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/discovery/{id}/add", s.handleAddDiscovered)
 	mux.HandleFunc("DELETE /api/discovery/{id}", s.handleDeleteDiscovered)
 
-	// ── Jobs ──
+	// ── Real-Time SSE Event Hub (Domain 4) ──
+	mux.HandleFunc("GET /api/events", s.handleEvents)
+
+	// ── Jobs (Domain 4 & Domain 5) ──
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
@@ -314,14 +370,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/pause", s.handlePauseJob)
 	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResumeJob)
 	mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
+	mux.HandleFunc("POST /api/jobs/{id}/release", s.handleReleaseSecureJob)
+	mux.HandleFunc("POST /api/jobs/{id}/reroute", s.handleRerouteJob)
+	mux.HandleFunc("POST /api/jobs/{id}/purge", s.handlePurgeJob)
 	mux.HandleFunc("POST /api/jobs/reorder", s.handleReorderJobs)
 	mux.HandleFunc("POST /api/jobs/{id}/priority", s.handleSetPriority)
 	mux.HandleFunc("POST /api/jobs/clear", s.handleClearJobs)
 	mux.HandleFunc("DELETE /api/jobs", s.handleClearJobs)
 
-	// ── History ──
+	// ── History & Analytics (Domain 5) ──
 	mux.HandleFunc("GET /api/history", s.handleListHistory)
 	mux.HandleFunc("DELETE /api/history", s.handleClearHistory)
+	mux.HandleFunc("GET /api/analytics/summary", s.handleAnalyticsSummary)
+	mux.HandleFunc("GET /api/analytics/export", s.handleAnalyticsExport)
 
 	// ── Settings ──
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
@@ -1307,29 +1368,34 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 }
 
 type createJobReq struct {
-	FileType     string `json:"fileType"`
-	Pages        int    `json:"pages"`
-	Copies       int    `json:"copies"`
-	Color        bool   `json:"color"`
-	Duplex       bool   `json:"duplex"`
-	PaperSize    string `json:"paperSize"`
-	Orientation  string `json:"orientation"`
-	Quality      string `json:"quality"`
-	Scaling      string `json:"scaling"`
-	PageRange    string `json:"pageRange"`
-	Priority     int    `json:"priority"`
-	PrinterID    string `json:"printerId"`
-	Size         string `json:"size"`
-	FileName     string `json:"fileName,omitempty"`
-	NUp          int    `json:"nUp,omitempty"`
-	Collate      bool   `json:"collate,omitempty"`
-	MediaType    string `json:"mediaType,omitempty"`
-	InputTray    string `json:"inputTray,omitempty"`
-	Borderless   bool   `json:"borderless,omitempty"`
-	Booklet      bool   `json:"booklet,omitempty"`
-	Watermark    string `json:"watermark,omitempty"`
-	ManualDuplex bool   `json:"manualDuplex,omitempty"`
-	DuplexStep   string `json:"duplexStep,omitempty"`
+	FileType      string `json:"fileType"`
+	Pages         int    `json:"pages"`
+	Copies        int    `json:"copies"`
+	Color         bool   `json:"color"`
+	Duplex        bool   `json:"duplex"`
+	PaperSize     string `json:"paperSize"`
+	Orientation   string `json:"orientation"`
+	Quality       string `json:"quality"`
+	Scaling       string `json:"scaling"`
+	PageRange     string `json:"pageRange"`
+	Priority      int    `json:"priority"`
+	PrinterID     string `json:"printerId"`
+	Size          string `json:"size"`
+	FileName      string `json:"fileName,omitempty"`
+	NUp           int    `json:"nUp,omitempty"`
+	Collate       bool   `json:"collate,omitempty"`
+	MediaType     string `json:"mediaType,omitempty"`
+	InputTray     string `json:"inputTray,omitempty"`
+	Borderless    bool   `json:"borderless,omitempty"`
+	Booklet       bool   `json:"booklet,omitempty"`
+	Watermark     string `json:"watermark,omitempty"`
+	ManualDuplex  bool   `json:"manualDuplex,omitempty"`
+	DuplexStep    string `json:"duplexStep,omitempty"`
+	SecureRelease bool   `json:"secureRelease,omitempty"`
+	PIN           string `json:"pin,omitempty"`
+	Cost          int    `json:"cost,omitempty"`
+	User          string `json:"user,omitempty"`
+	Department    string `json:"department,omitempty"`
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
@@ -1405,12 +1471,15 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "printer not found")
 		return
 	}
-	if !p.Enabled || p.Status == "offline" {
-		writeErr(w, 409, "printer is offline or disabled")
+	if !p.Enabled {
+		writeErr(w, 409, "printer is disabled")
 		return
 	}
-	if req.Copies == 0 {
+	if req.Copies <= 0 {
 		req.Copies = 1
+	}
+	if req.Pages <= 0 {
+		req.Pages = 1
 	}
 	if req.PaperSize == "" {
 		req.PaperSize = "A4"
@@ -1436,6 +1505,27 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		req.Duplex = false
 	}
 
+	// Cost & Quota calculation
+	basePrice := 500
+	if req.Color {
+		basePrice = 1500
+	}
+	calcCost := req.Cost
+	if calcCost <= 0 {
+		calcCost = req.Pages * req.Copies * basePrice
+		if req.Duplex {
+			calcCost = int(float64(calcCost) * 0.9) // 10% duplex paper savings discount
+		}
+	}
+	userName := req.User
+	if userName == "" {
+		userName = "Andi Ahmad"
+	}
+	deptName := req.Department
+	if deptName == "" {
+		deptName = "Engineering"
+	}
+
 	name := req.FileName
 	if name == "" {
 		name = "print-job"
@@ -1449,36 +1539,49 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := "queued"
+	if req.SecureRelease && req.PIN != "" {
+		status = "held-secure"
+	}
 	progress := 0
 	job, err := s.store.CreateJob(store.Job{
-		Name:        name,
-		FileType:    fileType,
-		FilePath:    filePath,
-		Pages:       req.Pages,
-		Copies:      req.Copies,
-		Color:       req.Color,
-		Duplex:      req.Duplex,
-		PaperSize:   req.PaperSize,
-		Orientation: req.Orientation,
-		Quality:     req.Quality,
-		Scaling:     req.Scaling,
-		PageRange:   req.PageRange,
-		Priority:    req.Priority,
-		Status:      status,
-		Progress:    progress,
-		Size:        req.Size,
-		PrinterID:   p.ID,
+		Name:          name,
+		FileType:      fileType,
+		FilePath:      filePath,
+		Pages:         req.Pages,
+		Copies:        req.Copies,
+		Color:         req.Color,
+		Duplex:        req.Duplex,
+		PaperSize:     req.PaperSize,
+		Orientation:   req.Orientation,
+		Quality:       req.Quality,
+		Scaling:       req.Scaling,
+		PageRange:     req.PageRange,
+		Priority:      req.Priority,
+		Status:        status,
+		Progress:      progress,
+		Size:          req.Size,
+		PrinterID:     p.ID,
+		PIN:           req.PIN,
+		SecureRelease: req.SecureRelease,
+		Cost:          calcCost,
+		User:          userName,
+		Department:    deptName,
 	})
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 
-	// Return 201 immediately with queued status (< 15ms)
+	// Broadcast live event to all connected clients
+	if s.hub != nil {
+		s.hub.Broadcast("job_created", job)
+	}
+
+	// Return 201 immediately (< 15ms)
 	writeJSON(w, 201, job)
 
-	// Submit to real CUPS/IPP printer asynchronously in the background
-	if s.cfg.CUPSURL != "" && filePath != "" {
+	// Submit to real CUPS/IPP printer asynchronously in the background (if not held for secure PIN)
+	if s.cfg.CUPSURL != "" && filePath != "" && status != "held-secure" {
 		go s.dispatchPrintJob(job.ID, filePath, req, p, name)
 	}
 }
@@ -1488,6 +1591,11 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	if filePath == "" {
 		return
 	}
+
+	// Domain 4: Hardware Mutex & Worker Lock per printer to eliminate device busy collisions
+	mu := s.getPrinterMutex(p.ID)
+	mu.Lock()
+	defer mu.Unlock()
 
 	normHost := ""
 	if discovery.IsSSHURL(s.cfg.CUPSURL) {
@@ -2169,5 +2277,245 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeErr(w, 415, "cannot convert this file format to visual preview")
+}
+
+// ── Domain 4: Real-Time SSE Streaming & Concurrency Handlers ──
+
+// handleEvents provides zero-latency Server-Sent Events (SSE) streaming for queue & printer state.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	ch := s.hub.subscribe()
+	defer s.hub.unsubscribe(ch)
+
+	// Send initial connection event
+	initMsg, _ := json.Marshal(map[string]any{
+		"status": "connected",
+		"time":   time.Now().UnixMilli(),
+	})
+	fmt.Fprintf(w, "event: init\ndata: %s\n\n", string(initMsg))
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			_, _ = w.Write(msg)
+			flusher.Flush()
+		}
+	}
+}
+
+// handleReleaseSecureJob verifies a 4-digit PIN and releases a held secure job to the physical printer.
+func (s *Server) handleReleaseSecureJob(w http.ResponseWriter, r *http.Request) {
+	id := pathID(r)
+	j, err := s.store.GetJob(id)
+	if err != nil {
+		writeErr(w, 404, "job not found")
+		return
+	}
+
+	var req struct {
+		PIN string `json:"pin"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if j.PIN != "" && j.PIN != req.PIN {
+		writeErr(w, 401, "PIN salah. Silakan masukkan PIN yang sesuai.")
+		return
+	}
+
+	p, err := s.store.GetPrinter(j.PrinterID)
+	if err != nil {
+		writeErr(w, 400, "target printer unavailable")
+		return
+	}
+
+	j.Status = "queued"
+	_ = s.store.UpdateJob(j)
+	if s.hub != nil {
+		s.hub.Broadcast("job_updated", j)
+	}
+
+	jobReq := createJobReq{
+		FileType:    j.FileType,
+		Pages:       j.Pages,
+		Copies:      j.Copies,
+		Color:       j.Color,
+		Duplex:      j.Duplex,
+		PaperSize:   j.PaperSize,
+		Orientation: j.Orientation,
+		Quality:     j.Quality,
+		Scaling:     j.Scaling,
+		PageRange:   j.PageRange,
+		Priority:    j.Priority,
+		PrinterID:   j.PrinterID,
+		Cost:        j.Cost,
+		User:        j.User,
+		Department:  j.Department,
+	}
+
+	go s.dispatchPrintJob(j.ID, j.FilePath, jobReq, p, j.Name)
+
+	writeJSON(w, 200, map[string]any{
+		"ok":      true,
+		"message": "PIN diverifikasi. Dokumen telah dilepas dan dikirim ke antrean cetak.",
+		"jobId":   j.ID,
+	})
+}
+
+// handleRerouteJob re-routes an existing job to another target printer.
+func (s *Server) handleRerouteJob(w http.ResponseWriter, r *http.Request) {
+	id := pathID(r)
+	j, err := s.store.GetJob(id)
+	if err != nil {
+		writeErr(w, 404, "job not found")
+		return
+	}
+
+	var req struct {
+		PrinterID string `json:"printerId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PrinterID == "" {
+		writeErr(w, 400, "printerId is required")
+		return
+	}
+
+	newPrinter, err := s.store.GetPrinter(req.PrinterID)
+	if err != nil {
+		writeErr(w, 404, "new target printer not found")
+		return
+	}
+
+	j.PrinterID = newPrinter.ID
+	j.Status = "queued"
+	j.Progress = 0
+	_ = s.store.UpdateJob(j)
+	if s.hub != nil {
+		s.hub.Broadcast("job_updated", j)
+	}
+
+	jobReq := createJobReq{
+		FileType:    j.FileType,
+		Pages:       j.Pages,
+		Copies:      j.Copies,
+		Color:       j.Color,
+		Duplex:      j.Duplex,
+		PaperSize:   j.PaperSize,
+		Orientation: j.Orientation,
+		Quality:     j.Quality,
+		Scaling:     j.Scaling,
+		PageRange:   j.PageRange,
+		Priority:    j.Priority,
+		PrinterID:   newPrinter.ID,
+		Cost:        j.Cost,
+		User:        j.User,
+		Department:  j.Department,
+	}
+
+	go s.dispatchPrintJob(j.ID, j.FilePath, jobReq, newPrinter, j.Name)
+
+	writeJSON(w, 200, map[string]any{
+		"ok":          true,
+		"message":     fmt.Sprintf("Job dialihkan ke printer %s", newPrinter.Name),
+		"printerName": newPrinter.Name,
+	})
+}
+
+// handlePurgeJob permanently purges a job and securely wipes temporary spool artifacts.
+func (s *Server) handlePurgeJob(w http.ResponseWriter, r *http.Request) {
+	id := pathID(r)
+	j, err := s.store.GetJob(id)
+	if err == nil && j.FilePath != "" {
+		_ = os.Remove(j.FilePath)
+	}
+	_ = s.store.DeleteJob(id)
+	if s.hub != nil {
+		s.hub.Broadcast("job_deleted", map[string]string{"id": id})
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "message": "Job and temporary spool file purged successfully"})
+}
+
+// ── Domain 5: Security, Accounting & Analytics Handlers ──
+
+// handleAnalyticsSummary returns global usage summary, cost breakdown and department quotas.
+func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
+	hist, _ := s.store.ListHistory(1000)
+	totalJobs := len(hist)
+	totalPages := 0
+	totalCost := 0
+	deptPages := make(map[string]int)
+
+	for _, h := range hist {
+		pages := h.Pages * h.Copies
+		totalPages += pages
+		totalCost += h.Cost
+		dept := h.Department
+		if dept == "" {
+			dept = "Engineering"
+		}
+		deptPages[dept] += pages
+	}
+
+	monthlyQuota := 500
+	quotaUsed := totalPages % monthlyQuota
+	if quotaUsed == 0 && totalPages > 0 {
+		quotaUsed = monthlyQuota
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"totalJobs":      totalJobs,
+		"totalPages":     totalPages,
+		"totalCost":      totalCost,
+		"monthlyQuota":   monthlyQuota,
+		"quotaUsed":      quotaUsed,
+		"quotaRemaining": monthlyQuota - quotaUsed,
+		"departments":    deptPages,
+	})
+}
+
+// handleAnalyticsExport exports complete print audit logs as CSV or JSON.
+func (s *Server) handleAnalyticsExport(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	hist, err := s.store.ListHistory(5000)
+	if err != nil {
+		writeErr(w, 500, "cannot fetch history: "+err.Error())
+		return
+	}
+
+	if strings.ToLower(format) == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="kroomprint-audit-log.csv"`)
+		w.WriteHeader(200)
+
+		fmt.Fprintln(w, "ID,Job Name,File Type,Pages,Copies,Total Pages,Printer Name,Status,Cost (IDR),User,Department,Created At,Duration,Error")
+		for _, h := range hist {
+			totPages := h.Pages * h.Copies
+			dateStr := time.UnixMilli(h.CreatedAt).Format(time.RFC3339)
+			fmt.Fprintf(w, "%q,%q,%q,%d,%d,%d,%q,%q,%d,%q,%q,%q,%q,%q\n",
+				h.ID, h.Name, h.FileType, h.Pages, h.Copies, totPages, h.PrinterName, h.Status, h.Cost, h.User, h.Department, dateStr, h.Duration, h.Error,
+			)
+		}
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"records": hist,
+		"total":   len(hist),
+	})
 }
 

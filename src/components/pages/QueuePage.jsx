@@ -12,6 +12,7 @@ const statusMeta = {
   printing: { label: 'Printing', cls: 'bg-lime-300 text-dark-black-900 border-dark-black-900' },
   queued: { label: 'Queued', cls: 'bg-sky-blue-100 text-dark-black-900 border-dark-black-900' },
   paused: { label: 'Paused', cls: 'bg-warn-100 text-warn-500 border-dark-black-900' },
+  'held-secure': { label: '🔒 Held (PIN Required)', cls: 'bg-amber-300 text-dark-black-900 border-dark-black-900 font-bold animate-pulse' },
   completed: { label: 'Completed', cls: 'bg-ok-100 text-ok-500 border-dark-black-900' },
   failed: { label: 'Failed', cls: 'bg-err-100 text-err-500 border-err-500' },
   cancelled: { label: 'Cancelled', cls: 'bg-surface-gray-300 text-dark-gray-600 border-dark-black-900' },
@@ -27,14 +28,23 @@ const priorityMeta = {
 
 export default function QueuePage() {
   const app = useApp()
-  const { jobs, printers, cancelJob, pauseJob, resumeJob, reorderQueue, setJobPriority, clearQueue, toast } = app
+  const {
+    jobs, printers, cancelJob, pauseJob, resumeJob, reorderQueue,
+    setJobPriority, clearQueue, releaseSecureJob, rerouteJob, purgeJob, toast
+  } = app
 
   const [detail, setDetail] = useState(null)
   const [draggingId, setDraggingId] = useState(null)
   const [overId, setOverId] = useState(null)
   const [showAll, setShowAll] = useState(false)
 
-  const activeJobs = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused', 'failed'].includes(j.status)), [jobs])
+  // Modals for Domain 4 & 5
+  const [releaseJob, setReleaseJob] = useState(null)
+  const [enteredPin, setEnteredPin] = useState('')
+  const [rerouteJobTarget, setRerouteJobTarget] = useState(null)
+  const [selectedReroutePrinterId, setSelectedReroutePrinterId] = useState('')
+
+  const activeJobs = useMemo(() => jobs.filter((j) => ['queued', 'printing', 'paused', 'failed', 'held-secure'].includes(j.status)), [jobs])
   const doneJobs = useMemo(() => jobs.filter((j) => ['completed', 'cancelled'].includes(j.status)), [jobs])
   const displayed = showAll ? activeJobs : activeJobs.slice(0, 8)
 
@@ -179,6 +189,34 @@ export default function QueuePage() {
                     >
                       <IconEye size={16} />
                     </button>
+
+                    {/* Domain 5: Secure Release PIN action */}
+                    {job.status === 'held-secure' && (
+                      <button
+                        onClick={() => {
+                          setReleaseJob(job)
+                          setEnteredPin('')
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-amber-300 hover:bg-amber-400 font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-xs"
+                      >
+                        🔒 Release PIN
+                      </button>
+                    )}
+
+                    {/* Domain 4: Re-route Printer action */}
+                    {['queued', 'paused', 'failed', 'held-secure'].includes(job.status) && (
+                      <button
+                        onClick={() => {
+                          setRerouteJobTarget(job)
+                          setSelectedReroutePrinterId(job.printerId)
+                        }}
+                        className="w-9 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 flex items-center justify-center cursor-pointer"
+                        title="Re-route to another printer"
+                      >
+                        <IconRefresh size={16} />
+                      </button>
+                    )}
+
                     {job.status === 'paused' ? (
                       <button
                         onClick={() => resumeJob(job.id)}
@@ -201,6 +239,14 @@ export default function QueuePage() {
                           <IconTrash size={14} /> Cancel
                         </button>
                       </>
+                    ) : (job.status === 'failed' || job.status === 'cancelled') ? (
+                      <button
+                        onClick={() => purgeJob(job.id)}
+                        className="inline-flex items-center gap-1.5 px-3 h-9 rounded-[10px] border-2 border-dark-black-900/40 bg-vanilla-100 hover:bg-err-100 text-dark-black-900/70 hover:text-err-500 font-figtree text-[12px] font-semibold cursor-pointer"
+                        title="Purge spool file & job"
+                      >
+                        Purge
+                      </button>
                     ) : null}
                   </div>
                 </div>
@@ -232,6 +278,108 @@ export default function QueuePage() {
         </div>
       )}
 
+      {/* ── Secure PIN Release Modal (Domain 5) ── */}
+      <Modal
+        open={!!releaseJob}
+        onClose={() => setReleaseJob(null)}
+        title="Secure Print Release"
+        subtitle={releaseJob ? `${releaseJob.name} (${printerOf(releaseJob.printerId)})` : ''}
+        size="sm"
+        footer={
+          <>
+            <Button
+              variant="lime"
+              onClick={async () => {
+                if (!enteredPin) {
+                  toast('Silakan masukkan PIN release', 'error')
+                  return
+                }
+                try {
+                  await releaseSecureJob(releaseJob.id, enteredPin)
+                  setReleaseJob(null)
+                } catch {}
+              }}
+              icon={<IconPlay size={15} />}
+            >
+              Release & Print
+            </Button>
+            <Button variant="vanilla" onClick={() => setReleaseJob(null)}>Batal</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="p-3 bg-amber-100 border-2 border-dark-black-900 rounded-[12px] text-[13px] font-figtree text-dark-black-900">
+            🔒 Dokumen ini dikunci dengan Secure PIN. Masukkan 4-digit PIN yang Anda tentukan saat mengirim dokumen.
+          </div>
+          <div>
+            <label className="font-figtree text-[13px] font-bold text-dark-black-900 block mb-1">
+              Enter 4-Digit Release PIN:
+            </label>
+            <input
+              type="password"
+              maxLength={6}
+              value={enteredPin}
+              onChange={(e) => setEnteredPin(e.target.value)}
+              placeholder="••••"
+              className="w-full h-12 px-4 text-center tracking-widest text-[20px] font-mono font-bold rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 focus:bg-white focus:outline-none"
+              autoFocus
+            />
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Re-route Printer Modal (Domain 4) ── */}
+      <Modal
+        open={!!rerouteJobTarget}
+        onClose={() => setRerouteJobTarget(null)}
+        title="Re-route Print Job"
+        subtitle={rerouteJobTarget ? `Pindahkan "${rerouteJobTarget.name}" ke printer lain` : ''}
+        size="sm"
+        footer={
+          <>
+            <Button
+              variant="lime"
+              onClick={async () => {
+                if (!selectedReroutePrinterId) return
+                try {
+                  await rerouteJob(rerouteJobTarget.id, selectedReroutePrinterId)
+                  setRerouteJobTarget(null)
+                } catch {}
+              }}
+            >
+              Konfirmasi Alihkan
+            </Button>
+            <Button variant="vanilla" onClick={() => setRerouteJobTarget(null)}>Batal</Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="text-[13px] font-figtree text-dark-black-900/80">
+            Pilih printer tujuan baru yang tersedia dan online untuk melanjutkan pencetakan dokumen ini:
+          </div>
+          <div className="flex flex-col gap-2">
+            {printers.filter((p) => p.enabled).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setSelectedReroutePrinterId(p.id)}
+                className={`p-3 rounded-[12px] border-2 text-left font-figtree flex items-center justify-between transition-all cursor-pointer ${
+                  selectedReroutePrinterId === p.id
+                    ? 'border-dark-black-900 bg-lime-300 shadow-xs'
+                    : 'border-dark-black-900/20 bg-vanilla-100 hover:border-dark-black-900'
+                }`}
+              >
+                <div>
+                  <div className="font-bold text-[14px] text-dark-black-900">{p.name}</div>
+                  <div className="text-[12px] text-dark-black-900/60 font-mono">{p.brand} · {p.status}</div>
+                </div>
+                <span className={`w-2.5 h-2.5 rounded-full ${p.status === 'online' ? 'bg-ok-500' : 'bg-warn-500'}`} />
+              </button>
+            ))}
+          </div>
+        </div>
+      </Modal>
+
       {/* ── Job detail modal ── */}
       <Modal
         open={!!detail}
@@ -242,6 +390,18 @@ export default function QueuePage() {
         footer={
           <>
             {detail?.status === 'paused' && <Button variant="lime" onClick={() => { resumeJob(detail.id); setDetail(null) }} icon={<IconPlay size={15} />}>Resume job</Button>}
+            {detail?.status === 'held-secure' && (
+              <Button
+                variant="lime"
+                onClick={() => {
+                  setReleaseJob(detail)
+                  setDetail(null)
+                  setEnteredPin('')
+                }}
+              >
+                Release PIN
+              </Button>
+            )}
             {(detail?.status === 'queued' || detail?.status === 'printing') && (
               <>
                 <Button variant="vanilla" onClick={() => { pauseJob(detail.id); setDetail(null) }} icon={<IconPause size={15} />}>Pause</Button>
@@ -269,6 +429,8 @@ export default function QueuePage() {
                 { label: 'Paper size', value: detail.paperSize },
                 { label: 'Color', value: detail.color ? 'Color' : 'Grayscale' },
                 { label: 'Duplex', value: detail.duplex ? 'Two-sided' : 'Single-sided' },
+                { label: 'Department', value: detail.department || 'Engineering' },
+                { label: 'Cost', value: `Rp ${(detail.cost || 0).toLocaleString('id-ID')}` },
                 { label: 'File size', value: detail.size || '—' },
                 { label: 'Priority', value: priorityMeta[detail.priority]?.label || 'Normal' },
               ].map((row) => (

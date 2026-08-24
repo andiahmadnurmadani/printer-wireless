@@ -203,14 +203,14 @@ func (s *Server) syncCupsJobStatus() {
 			if totalPages <= 0 {
 				totalPages = 1
 			}
-			secPerPage := 10.0
+			secPerPage := 6.0
 			switch strings.ToLower(j.Quality) {
 			case "draft":
-				secPerPage = 5.0
+				secPerPage = 4.0
 			case "high":
-				secPerPage = 20.0
+				secPerPage = 12.0
 			case "photo":
-				secPerPage = 35.0
+				secPerPage = 20.0
 			}
 			estTotalSec := float64(totalPages) * secPerPage
 			elapsedSec := float64(time.Now().UnixMilli()-j.CreatedAt) / 1000.0
@@ -218,15 +218,35 @@ func (s *Server) syncCupsJobStatus() {
 				elapsedSec = 0
 			}
 
-			// Spooling & Rasterizing stage (10% -> 25%)
-			// Physical head printing stage (25% -> 94%)
-			prog := 12.0 + (elapsedSec/estTotalSec)*80.0
-			if prog > 94.0 {
-				prog = 94.0
+			// Spooling & Rasterizing stage (15% -> 80%) -> Physical head printing stage (80% -> 98%)
+			prog := 15.0 + (elapsedSec/estTotalSec)*75.0
+			if elapsedSec > estTotalSec {
+				prog = 85.0 + ((elapsedSec-estTotalSec)/estTotalSec)*12.0
+			}
+			if prog > 98.0 {
+				prog = 98.0
 			}
 			if int(prog) > j.Progress {
 				j.Progress = int(prog)
 				_ = s.store.UpdateJob(j)
+				if s.hub != nil {
+					s.hub.Broadcast("job_updated", j)
+				}
+			}
+
+			// If job elapsed exceeds estimated duration + 4s, complete lifecycle
+			if elapsedSec > estTotalSec+4.0 {
+				now := time.Now().UnixMilli()
+				j.Status = "completed"
+				j.Progress = 100
+				j.CompletedAt = &now
+				_ = s.store.UpdateJob(j)
+				_ = s.store.CompleteJobToHistory(j, "completed", "")
+				if s.hub != nil {
+					s.hub.Broadcast("job_updated", j)
+					s.hub.Broadcast("job_completed", j)
+				}
+				s.log.Printf("job %s (%s) finished lifecycle progression", j.Name, j.ID[:8])
 			}
 
 		case "completed":
@@ -236,6 +256,10 @@ func (s *Server) syncCupsJobStatus() {
 			j.CompletedAt = &now
 			_ = s.store.UpdateJob(j)
 			_ = s.store.CompleteJobToHistory(j, "completed", "")
+			if s.hub != nil {
+				s.hub.Broadcast("job_updated", j)
+				s.hub.Broadcast("job_completed", j)
+			}
 			s.log.Printf("job %s (%s) completed by CUPS", j.Name, j.ID[:8])
 
 		case "notfound":
@@ -248,6 +272,10 @@ func (s *Server) syncCupsJobStatus() {
 				j.CompletedAt = &now
 				_ = s.store.UpdateJob(j)
 				_ = s.store.CompleteJobToHistory(j, "completed", "")
+				if s.hub != nil {
+					s.hub.Broadcast("job_updated", j)
+					s.hub.Broadcast("job_completed", j)
+				}
 				s.log.Printf("job %s (%s) finished and cleared from CUPS spooler", j.Name, j.ID[:8])
 			}
 		}
@@ -1767,36 +1795,26 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		s.hub.Broadcast("job_updated", job)
 	}
 
-	// Smooth completion progress tracking
-	go func(j store.Job) {
-		time.Sleep(3 * time.Second)
-		j.Progress = 60
-		_ = s.store.UpdateJob(j)
-		if s.hub != nil {
-			s.hub.Broadcast("job_updated", j)
-		}
-		time.Sleep(4 * time.Second)
-		j.Progress = 100
-		j.Status = "completed"
-		_ = s.store.UpdateJob(j)
-		if s.hub != nil {
-			s.hub.Broadcast("job_updated", j)
-			s.hub.Broadcast("job_completed", j)
-		}
-
-		printerName := ""
-		if p, err := s.store.GetPrinter(j.PrinterID); err == nil {
-			printerName = p.Name
-		}
-		_ = s.store.AddHistory(store.HistoryRecord{
-			Name:        j.Name,
-			FileType:    j.FileType,
-			Pages:       j.Pages,
-			Copies:      j.Copies,
-			PrinterName: printerName,
-			Status:      "completed",
-		})
-	}(job)
+	// If no CUPS URL configured (demo/mock mode), simulate smooth progress
+	if s.cfg.CUPSURL == "" {
+		go func(j store.Job) {
+			time.Sleep(3 * time.Second)
+			j.Progress = 60
+			_ = s.store.UpdateJob(j)
+			if s.hub != nil {
+				s.hub.Broadcast("job_updated", j)
+			}
+			time.Sleep(4 * time.Second)
+			j.Progress = 100
+			j.Status = "completed"
+			_ = s.store.UpdateJob(j)
+			_ = s.store.CompleteJobToHistory(j, "completed", "")
+			if s.hub != nil {
+				s.hub.Broadcast("job_updated", j)
+				s.hub.Broadcast("job_completed", j)
+			}
+		}(job)
+	}
 }
 
 // cupsPrinterName extracts the CUPS printer queue name from a registered printer.

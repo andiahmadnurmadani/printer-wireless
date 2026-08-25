@@ -123,8 +123,19 @@ CREATE TABLE IF NOT EXISTS settings (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS users (
+	id TEXT PRIMARY KEY,
+	username TEXT NOT NULL UNIQUE,
+	password_hash TEXT NOT NULL,
+	role TEXT NOT NULL DEFAULT 'user',
+	created_at INTEGER NOT NULL
+);
 `
 	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	if err := s.seedDefaultAdmin(); err != nil {
 		return err
 	}
 	// Lightweight migrations for DBs created before these columns existed.

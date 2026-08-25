@@ -6,7 +6,9 @@ module.exports = {
       script: './kroomprint-backend',
       env: {
         KROOM_ADDR: ':8088',
-        KROOM_DB: '/mnt/web/Nouvem/printer-wireless/backend/data/kroomprint.db',
+        // SQLite must live on amba's local disk: WAL/mmap over the NAS network
+        // mount caused fatal faults and repeated PM2 restarts.
+        KROOM_DB: '/home/amba/kroomprint-data/kroomprint.db',
         KROOM_UPLOADS: '/mnt/web/Nouvem/printer-wireless/backend/uploads',
         KROOM_CUPS_URL: 'http://localhost:631',
         KROOM_CUPS_SSH: 'amba',

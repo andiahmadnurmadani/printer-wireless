@@ -254,7 +254,7 @@ export default function PrintPage({ onNavigate }) {
   const fileMeta = (name) => {
     const ext = name.split('.').pop().toUpperCase()
     if (['PDF'].includes(ext)) return { icon: <IconFile size={20} />, bg: 'bg-err-100' }
-    if (['PNG', 'JPG', 'BMP', 'WEBP', 'HEIC'].includes(ext)) return { icon: <IconImage size={20} />, bg: 'bg-sky-blue-100' }
+    if (['PNG', 'JPG', 'JPEG', 'BMP', 'WEBP', 'HEIC', 'GIF', 'TIF', 'TIFF', 'SVG'].includes(ext)) return { icon: <IconImage size={20} />, bg: 'bg-sky-blue-100' }
     if (['TXT', 'CSV'].includes(ext)) return { icon: <IconTxt size={20} />, bg: 'bg-lime-300' }
     return { icon: <IconFile size={20} />, bg: 'bg-vanilla-300' }
   }
@@ -264,7 +264,7 @@ export default function PrintPage({ onNavigate }) {
     const f = e.dataTransfer?.files?.[0] || e.target?.files?.[0]
     if (!f) return
     const ext = f.name.split('.').pop()?.toUpperCase()
-    if (!ext || !['PDF', 'PNG', 'JPG', 'JPEG', 'TXT', 'DOCX', 'DOC', 'XLSX', 'PPTX', 'CSV', 'BMP', 'WEBP', 'HEIC', 'SVG'].includes(ext)) {
+    if (!ext || !['PDF', 'PNG', 'JPG', 'JPEG', 'TXT', 'DOCX', 'DOC', 'XLSX', 'XLS', 'PPTX', 'PPT', 'CSV', 'BMP', 'WEBP', 'HEIC', 'SVG', 'GIF', 'TIF', 'TIFF', 'ODT', 'ODP', 'ODS', 'RTF'].includes(ext)) {
       toast('Unsupported file type', 'error')
       return
     }

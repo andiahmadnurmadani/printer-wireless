@@ -64,9 +64,13 @@ func ippHTTP(host, path, uri string, operation uint16, jobAttrs map[string]strin
 	if len(docData) > 0 {
 		body = append(body, docData...)
 	}
+	return ippPostBytes(host, path, body, 15*time.Second)
+}
 
-	url := "http://" + host + path
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+// ippPostBytes POSTs a prebuilt IPP request body and returns the parsed response.
+func ippPostBytes(host, path string, body []byte, timeout time.Duration) (*ippResponse, error) {
+	target := "http://" + host + path
+	req, err := http.NewRequest("POST", target, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +78,7 @@ func ippHTTP(host, path, uri string, operation uint16, jobAttrs map[string]strin
 	req.Header.Set("Accept", "application/ipp")
 	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -255,18 +259,22 @@ func ippBuild(operation uint16, uri string, jobAttrs map[string]string, copies i
 
 func writeIppAttr(b *bytes.Buffer, tag byte, name, value string) {
 	b.WriteByte(tag)
-	b.WriteByte(byte(len(name)))
+	writeIppUint16(b, uint16(len(name)))
 	b.WriteString(name)
-	binary.Write(b, binary.BigEndian, uint32(len(value)))
+	writeIppUint16(b, uint16(len(value)))
 	b.WriteString(value)
 }
 
 func writeIppInt(b *bytes.Buffer, tag byte, name string, value int32) {
 	b.WriteByte(tag)
-	b.WriteByte(byte(len(name)))
+	writeIppUint16(b, uint16(len(name)))
 	b.WriteString(name)
-	binary.Write(b, binary.BigEndian, uint32(4))
+	writeIppUint16(b, 4)
 	binary.Write(b, binary.BigEndian, value)
+}
+
+func writeIppUint16(b *bytes.Buffer, v uint16) {
+	binary.Write(b, binary.BigEndian, v)
 }
 
 // parseIPP parses an IPP response into status + attributes.

@@ -33,19 +33,19 @@ type Device struct {
 	IP         string       `json:"ip"`
 	Caps       Capabilities `json:"caps"`
 	IsVirtual  bool         `json:"isVirtual"` // true = software printer (PDF/OneNote/etc)
-	Source     string       `json:"source"`   // windows | cups | ipp
+	Source     string       `json:"source"`    // windows | cups | ipp
 }
 
 // ── Mock profile for simulated printers ──
 
 type mockProfile struct {
-	Brand   string
-	Model   string
-	Color   bool
-	Duplex  bool
-	Speed   string
-	Sizes   []string
-	Quals   []string
+	Brand  string
+	Model  string
+	Color  bool
+	Duplex bool
+	Speed  string
+	Sizes  []string
+	Quals  []string
 }
 
 var mockPrinters = []mockProfile{
@@ -61,10 +61,12 @@ var mockPrinters = []mockProfile{
 	{Brand: "Xerox", Model: "WorkCentre 6515", Color: true, Duplex: true, Speed: "28 ppm", Sizes: []string{"A4", "A3", "A5", "Letter", "Legal"}, Quals: []string{"Draft", "Standard", "High"}},
 }
 
-func defaultSizes() []string    { return []string{"A4", "A5", "Letter", "Legal"} }
-func defaultQuals() []string    { return []string{"Draft", "Standard", "High"} }
-func defaultScalings() []string { return []string{"Fit to page", "Shrink to fit", "Actual size", "Custom"} }
-func defaultOrients() []string  { return []string{"Portrait", "Landscape"} }
+func defaultSizes() []string { return []string{"A4", "A5", "Letter", "Legal"} }
+func defaultQuals() []string { return []string{"Draft", "Standard", "High"} }
+func defaultScalings() []string {
+	return []string{"Fit to page", "Shrink to fit", "Actual size", "Custom"}
+}
+func defaultOrients() []string { return []string{"Portrait", "Landscape"} }
 
 // mockDevice builds a simulated printer with capabilities.
 func mockDevice(brand, model string, i int) Device {
@@ -122,7 +124,6 @@ func profOrDefault(p *mockProfile, i int) *mockProfile {
 
 // ippRequest builds a minimal IPP Get-Printer-Attributes POST body.
 func ippRequest() []byte {
-	// IPP/1.1 Get-Printer-Attributes
 	var b bytes.Buffer
 	// version 1.1
 	b.Write([]byte{0x01, 0x01})
@@ -132,29 +133,12 @@ func ippRequest() []byte {
 	binary.Write(&b, binary.BigEndian, uint32(1))
 	// operation attributes tag 0x01
 	b.Write([]byte{0x01})
-	// charset attribute
-	b.Write([]byte{0x47})
-	writeAttrName(&b, "attributes-charset")
-	b.Write([]byte{0x00, 0x05})
-	b.WriteString("utf-8")
-	// natural language
-	b.Write([]byte{0x48})
-	writeAttrName(&b, "attributes-natural-language")
-	b.Write([]byte{0x00, 0x02})
-	b.WriteString("en")
-	// target
-	b.Write([]byte{0x45})
-	writeAttrName(&b, "printer-uri")
-	b.Write([]byte{0x00, 0x04})
-	b.WriteString("ipp://")
+	writeIppAttr(&b, 0x47, "attributes-charset", "utf-8")
+	writeIppAttr(&b, 0x48, "attributes-natural-language", "en")
+	writeIppAttr(&b, 0x45, "printer-uri", "ipp://localhost/")
 	// end tag
 	b.Write([]byte{0x03})
 	return b.Bytes()
-}
-
-func writeAttrName(b *bytes.Buffer, name string) {
-	b.WriteByte(byte(len(name)))
-	b.WriteString(name)
 }
 
 // ippResponse is a minimal parser for the attributes we need.
@@ -176,37 +160,45 @@ func parseIPP(resp []byte) (*ippResponse, error) {
 	for len(body) > 0 {
 		tag := body[0]
 		body = body[1:]
-		switch tag {
-		case 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A: // delimiters
-			continue
-		case 0x00: // unsupported
+		if tag >= 0x00 && tag <= 0x0A {
+			// Zero-width unsupported marker + delimiter groups carry no attribute.
 			continue
 		}
 		if len(body) < 2 {
 			return out, nil
 		}
-		nameLen := int(body[0])
-		if nameLen > len(body)-1 {
+		nameLen := int(binary.BigEndian.Uint16(body[0:2]))
+		if nameLen > len(body)-2 {
 			return out, nil
 		}
-		name := string(body[1 : 1+nameLen])
-		body = body[1+nameLen:]
-		if len(body) < 5 {
+		name := string(body[2 : 2+nameLen])
+		body = body[2+nameLen:]
+		if len(body) < 2 {
 			return out, nil
 		}
-		valLen := int(binary.BigEndian.Uint32(body[1:5]))
-		if valLen > len(body)-5 {
+		valLen := int(binary.BigEndian.Uint16(body[0:2]))
+		if valLen > len(body)-2 {
 			return out, nil
 		}
-		val := body[5 : 5+valLen]
-		body = body[5+valLen:]
+		val := body[2 : 2+valLen]
+		body = body[2+valLen:]
 
-		switch tag {
-		case 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F:
-			// keywords / names / text / enum / boolean
+		switch {
+		case name == "":
+			// RFC 8011: an empty name marks an additional value
+			// for the attribute declared immediately before it.
+			continue
+		case tag == 0x22: // boolean
+			s := "false"
+			if len(val) == 1 && val[0] == 1 {
+				s = "true"
+			}
+			out.Attributes[name] = append(out.Attributes[name], s)
+		case tag == 0x21, tag == 0x23, tag >= 0x40 && tag <= 0x7F:
+			// integers/enums kept as raw big-endian bytes; keywords/names/text as strings
 			out.Attributes[name] = append(out.Attributes[name], string(val))
 		default:
-			// ranges, resolution — skip values
+			// ranges, resolutions, collections — skip values
 		}
 	}
 	return out, nil
@@ -271,16 +263,16 @@ func ippToCaps(r *ippResponse) *Capabilities {
 // cleanMedia normalizes IPP media names (iso_a4_210x297mm → A4).
 func cleanMedia(media []string) []string {
 	m := map[string]string{
-		"iso_a4_210x297mm":  "A4",
-		"iso_a5_148x210mm":  "A5",
-		"iso_a6_105x148mm":  "A6",
-		"iso_a3_297x420mm":  "A3",
-		"na_letter_8.5x11in": "Letter",
-		"na_legal_8.5x14in": "Legal",
+		"iso_a4_210x297mm":         "A4",
+		"iso_a5_148x210mm":         "A5",
+		"iso_a6_105x148mm":         "A6",
+		"iso_a3_297x420mm":         "A3",
+		"na_letter_8.5x11in":       "Letter",
+		"na_legal_8.5x14in":        "Legal",
 		"na_executive_7.25x10.5in": "Executive",
-		"na_ledger_11x17in":  "Tabloid",
-		"na_index-4x6_4x6in": "4x6 Photo",
-		"na_index-5x7_5x7in": "5x7 Photo",
+		"na_ledger_11x17in":        "Tabloid",
+		"na_index-4x6_4x6in":       "4x6 Photo",
+		"na_index-5x7_5x7in":       "5x7 Photo",
 	}
 	var out []string
 	seen := map[string]bool{}

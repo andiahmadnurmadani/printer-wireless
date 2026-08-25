@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,8 +84,8 @@ type Server struct {
 	scanState    scanState
 	previewCache map[string]previewCacheEntry // hash → cached PDF path
 	previewMu    sync.Mutex
-	printerLocks sync.Map                     // map[string]*sync.Mutex (Hardware Concurrency Lock)
-	hub          *ClientHub                   // Real-Time SSE Event Hub
+	printerLocks sync.Map   // map[string]*sync.Mutex (Hardware Concurrency Lock)
+	hub          *ClientHub // Real-Time SSE Event Hub
 	bootTime     time.Time
 }
 
@@ -134,7 +135,6 @@ func (s *Server) evictPreviewCache() {
 	}
 }
 
-
 // StartCupsPoller begins a background loop that syncs job status with the
 // real CUPS server. Only meaningful when CUPS is configured (ssh:// or http://).
 // It polls every 1 second and syncs real-time printing progress and completion.
@@ -152,7 +152,9 @@ func (s *Server) StartCupsPoller() {
 	}()
 }
 
-// syncCupsJobStatus checks all "printing" jobs against the real CUPS queue.
+// syncCupsJobStatus checks all "printing" jobs against the real CUPS server
+// using authoritative IPP job-state queries, so aborted/canceled jobs are
+// never mistaken for successful completions.
 func (s *Server) syncCupsJobStatus() {
 	jobs, err := s.store.ListJobs()
 	if err != nil {
@@ -174,109 +176,54 @@ func (s *Server) syncCupsJobStatus() {
 		}
 		printerName := cupsPrinterName(p)
 
-		var cupsStatus string
-		if sshMode {
-			cupsStatus, _ = discovery.SSHGetJobStatus(userHost, printerName, j.CupsJobID)
-		} else if lpstat, err := exec.LookPath("lpstat"); err == nil {
-			targetPrefix := fmt.Sprintf("%s-%d", printerName, j.CupsJobID)
-			outBytes, _ := exec.Command(lpstat, "-o", printerName).CombinedOutput()
-			out := string(outBytes)
-			if strings.Contains(out, targetPrefix) {
-				cupsStatus = "printing"
-			} else {
-				outCBytes, _ := exec.Command(lpstat, "-W", "completed", "-o", printerName).CombinedOutput()
-				outC := string(outCBytes)
-				if strings.Contains(outC, targetPrefix) {
-					cupsStatus = "completed"
-				} else {
-					cupsStatus = "notfound"
-				}
-			}
-		} else {
-			cupsStatus = "printing"
-		}
+		outcome := s.queryCupsJobOutcome(printerName, userHost, sshMode, j.CupsJobID)
 
-		switch cupsStatus {
-		case "printing":
-			// Calculate smooth real-time physical printing progress
-			totalPages := j.Pages * j.Copies
-			if totalPages <= 0 {
-				totalPages = 1
-			}
-			secPerPage := 6.0
-			switch strings.ToLower(j.Quality) {
-			case "draft":
-				secPerPage = 4.0
-			case "high":
-				secPerPage = 12.0
-			case "photo":
-				secPerPage = 20.0
-			}
-			estTotalSec := float64(totalPages) * secPerPage
-			elapsedSec := float64(time.Now().UnixMilli()-j.CreatedAt) / 1000.0
-			if elapsedSec < 0 {
-				elapsedSec = 0
-			}
-
-			// Spooling & Rasterizing stage (15% -> 80%) -> Physical head printing stage (80% -> 98%)
-			prog := 15.0 + (elapsedSec/estTotalSec)*75.0
-			if elapsedSec > estTotalSec {
-				prog = 85.0 + ((elapsedSec-estTotalSec)/estTotalSec)*12.0
-			}
-			if prog > 98.0 {
-				prog = 98.0
-			}
-			if int(prog) > j.Progress {
-				j.Progress = int(prog)
-				_ = s.store.UpdateJob(j)
-				if s.hub != nil {
-					s.hub.Broadcast("job_updated", j)
-				}
-			}
-
-			// If job elapsed exceeds estimated duration + 4s, complete lifecycle
-			if elapsedSec > estTotalSec+4.0 {
-				now := time.Now().UnixMilli()
-				j.Status = "completed"
-				j.Progress = 100
-				j.CompletedAt = &now
-				_ = s.store.UpdateJob(j)
-				_ = s.store.CompleteJobToHistory(j, "completed", "")
-				if s.hub != nil {
-					s.hub.Broadcast("job_updated", j)
-					s.hub.Broadcast("job_completed", j)
-				}
-				s.log.Printf("job %s (%s) finished lifecycle progression", j.Name, j.ID[:8])
-			}
-
+		switch outcome.state {
 		case "completed":
-			now := time.Now().UnixMilli()
-			j.Status = "completed"
-			j.Progress = 100
-			j.CompletedAt = &now
-			_ = s.store.UpdateJob(j)
-			_ = s.store.CompleteJobToHistory(j, "completed", "")
-			if s.hub != nil {
-				s.hub.Broadcast("job_updated", j)
-				s.hub.Broadcast("job_completed", j)
+			s.finishJobTerminal(&j, "completed", "", 100, true)
+
+		case "canceled":
+			msg := "canceled in CUPS"
+			if outcome.reasons != "" {
+				msg += ": " + outcome.reasons
 			}
-			s.log.Printf("job %s (%s) completed by CUPS", j.Name, j.ID[:8])
+			s.finishJobTerminal(&j, "cancelled", msg, j.Progress, false)
+
+		case "aborted", "stopped":
+			msg := "print failed in CUPS (" + outcome.state + ")"
+			if outcome.reasons != "" {
+				msg += ": " + outcome.reasons
+			}
+			s.finishJobTerminal(&j, "failed", msg, j.Progress, false)
+
+		case "pending", "held", "processing":
+			// Cosmetic time-based progress only. Completion is NEVER simulated:
+			// the job stays "printing" until CUPS reports a terminal state.
+			if prog := estimatedPrintProgress(&j); prog > j.Progress {
+				j.Progress = prog
+				_ = s.store.UpdateJob(j)
+				if s.hub != nil {
+					s.hub.Broadcast("job_updated", j)
+				}
+			}
 
 		case "notfound":
-			// Job finished and left CUPS active queue
+			// Job purged from CUPS history entirely. Best-effort only; with
+			// default history retention this should be rare.
 			elapsedSec := float64(time.Now().UnixMilli()-j.CreatedAt) / 1000.0
-			if elapsedSec > 2.0 {
-				now := time.Now().UnixMilli()
-				j.Status = "completed"
-				j.Progress = 100
-				j.CompletedAt = &now
+			if elapsedSec > 5.0 {
+				s.finishJobTerminal(&j, "completed", "", 100, true)
+			}
+
+		default:
+			// Unknown/unreachable state source: keep cosmetic progress,
+			// never fabricate a terminal status.
+			if prog := estimatedPrintProgress(&j); prog > j.Progress {
+				j.Progress = prog
 				_ = s.store.UpdateJob(j)
-				_ = s.store.CompleteJobToHistory(j, "completed", "")
 				if s.hub != nil {
 					s.hub.Broadcast("job_updated", j)
-					s.hub.Broadcast("job_completed", j)
 				}
-				s.log.Printf("job %s (%s) finished and cleared from CUPS spooler", j.Name, j.ID[:8])
 			}
 		}
 	}
@@ -313,6 +260,109 @@ func (s *Server) syncCupsJobStatus() {
 			}
 		}
 	}
+}
+
+// cupsJobOutcome is the honest classification of a CUPS job state.
+type cupsJobOutcome struct {
+	state   string // completed|canceled|aborted|stopped|pending|held|processing|printing|notfound
+	reasons string
+}
+
+// queryCupsJobOutcome resolves the authoritative CUPS job state. Production
+// (backend co-located with cupsd) uses IPP Get-Job-Attributes which can tell
+// aborted/canceled apart from completed; SSH/lpstat paths degrade to legacy
+// heuristics that cannot.
+func (s *Server) queryCupsJobOutcome(printerName, userHost string, sshMode bool, cupsJobID int) cupsJobOutcome {
+	if !sshMode && s.cfg.CUPSURL != "" {
+		host := discovery.NormalizeHost(s.cfg.CUPSURL)
+		state, reasons, err := discovery.GetJobStateIPP(host, printerName, cupsJobID, 5*time.Second)
+		if err == nil {
+			return cupsJobOutcome{state: state, reasons: reasons}
+		}
+		s.log.Printf("ipp job-state %s/%d unavailable (%v), falling back to lpstat", printerName, cupsJobID, err)
+	}
+
+	if sshMode {
+		cupsStatus, _ := discovery.SSHGetJobStatus(userHost, printerName, cupsJobID)
+		return cupsJobOutcome{state: legacyStatusToOutcome(cupsStatus)}
+	}
+	if lpstat, err := exec.LookPath("lpstat"); err == nil {
+		targetPrefix := fmt.Sprintf("%s-%d", printerName, cupsJobID)
+		outBytes, _ := exec.Command(lpstat, "-o", printerName).CombinedOutput()
+		if strings.Contains(string(outBytes), targetPrefix) {
+			return cupsJobOutcome{state: "processing"}
+		}
+		outCBytes, _ := exec.Command(lpstat, "-W", "completed", "-o", printerName).CombinedOutput()
+		if strings.Contains(string(outCBytes), targetPrefix) {
+			return cupsJobOutcome{state: "completed"}
+		}
+		return cupsJobOutcome{state: "notfound"}
+	}
+	return cupsJobOutcome{state: "processing"}
+}
+
+// legacyStatusToOutcome maps SSHGetJobStatus strings into outcome states.
+// The SSH transport cannot distinguish aborted from completed jobs; both are
+// reported as "completed" there, matching historical behavior.
+func legacyStatusToOutcome(cupsStatus string) string {
+	switch cupsStatus {
+	case "completed":
+		return "completed"
+	case "notfound":
+		return "notfound"
+	default:
+		return "processing"
+	}
+}
+
+// estimatedPrintProgress derives cosmetic progress (15%..98%) from elapsed
+// time vs per-page estimates. It must never reach 100 or set terminal status.
+func estimatedPrintProgress(j *store.Job) int {
+	totalPages := j.Pages * j.Copies
+	if totalPages <= 0 {
+		totalPages = 1
+	}
+	secPerPage := 6.0
+	switch strings.ToLower(j.Quality) {
+	case "draft":
+		secPerPage = 4.0
+	case "high":
+		secPerPage = 12.0
+	case "photo":
+		secPerPage = 20.0
+	}
+	estTotalSec := float64(totalPages) * secPerPage
+	elapsedSec := float64(time.Now().UnixMilli()-j.CreatedAt) / 1000.0
+	if elapsedSec < 0 {
+		elapsedSec = 0
+	}
+	prog := 15.0 + (elapsedSec/estTotalSec)*75.0
+	if elapsedSec > estTotalSec {
+		prog = 85.0 + ((elapsedSec-estTotalSec)/estTotalSec)*12.0
+	}
+	if prog > 98.0 {
+		prog = 98.0
+	}
+	return int(prog)
+}
+
+// finishJobTerminal applies a final status to a job, records history and
+// broadcasts the result to SSE subscribers.
+func (s *Server) finishJobTerminal(j *store.Job, status, errMsg string, progress int, broadcastCompleted bool) {
+	now := time.Now().UnixMilli()
+	j.Status = status
+	j.Progress = progress
+	j.Error = errMsg
+	j.CompletedAt = &now
+	_ = s.store.UpdateJob(*j)
+	_ = s.store.CompleteJobToHistory(*j, status, errMsg)
+	if s.hub != nil {
+		s.hub.Broadcast("job_updated", *j)
+		if broadcastCompleted {
+			s.hub.Broadcast("job_completed", *j)
+		}
+	}
+	s.log.Printf("job %s (%s) terminal: %s %s", j.Name, j.ID[:8], status, errMsg)
 }
 
 // writeJSON marshals v to the response writer with proper status.
@@ -478,12 +528,12 @@ func (s *Server) handleGetPrinter(w http.ResponseWriter, r *http.Request) {
 }
 
 type addPrinterReq struct {
-	Name      string `json:"name"`
-	Brand     string `json:"brand"`
-	Model     string `json:"model"`
+	Name       string `json:"name"`
+	Brand      string `json:"brand"`
+	Model      string `json:"model"`
 	Connection string `json:"connection"`
-	Address   string `json:"address"`
-	IsDefault bool   `json:"isDefault"`
+	Address    string `json:"address"`
+	IsDefault  bool   `json:"isDefault"`
 }
 
 func (s *Server) handleAddPrinter(w http.ResponseWriter, r *http.Request) {
@@ -565,7 +615,9 @@ func (s *Server) handleDeletePrinter(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRenamePrinter(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
-	var req struct{ Name string `json:"name"` }
+	var req struct {
+		Name string `json:"name"`
+	}
 	if err := readJSON(r, &req); err != nil || req.Name == "" {
 		writeErr(w, 400, "name is required")
 		return
@@ -1467,22 +1519,20 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			out.Close()
 			filePath = dst
 			// Derive file type from extension
-			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fname), "."))
-			switch ext {
-			case "pdf":
-				req.FileType = "PDF"
-			case "png":
-				req.FileType = "PNG"
-			case "jpg", "jpeg":
-				req.FileType = "JPG"
-			case "txt":
-				req.FileType = "TXT"
-			case "docx":
-				req.FileType = "DOCX"
-			case "xlsx":
-				req.FileType = "XLSX"
-			case "csv":
-				req.FileType = "CSV"
+			req.FileType = fileExtType(fname)
+			// Fix malformed producer metadata (e.g. float /Rotate values that
+			// crash cups-filters pdftopdf) at upload time so preview, retry
+			// and dispatch all operate on the repaired file.
+			if req.FileType == "PDF" {
+				if bad, serr := pdfHasFloatRotate(dst); serr == nil && bad {
+					if fixed, ok := repairPDFWithGhostscript(dst, s.log); ok {
+						if rerr := os.Rename(fixed, dst); rerr == nil {
+							s.log.Printf("upload: normalized /Rotate metadata in %s", fname)
+						} else {
+							_ = os.Remove(fixed)
+						}
+					}
+				}
 			}
 			// use original filename for the job
 			req.FileName = fname
@@ -1687,6 +1737,19 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 			s.log.Printf("ssh-submit %s/%s: job-id=%d err=%v (grayscale=%v)", userHost, printerName, cupsJobID, submitErr, isGray)
 		}
 	} else if lp, err := exec.LookPath("lp"); err == nil {
+		// Pre-flight: ensure printer queue is clean and accepting jobs.
+		// Stuck jobs (e.g. plain-text echo jobs left from testing) block the
+		// entire queue and silently drop all subsequent PDF jobs.
+		if cancelBin, cerr := exec.LookPath("cancel"); cerr == nil {
+			_ = exec.Command(cancelBin, "-a", printerName).Run()
+		}
+		if enableBin, eerr := exec.LookPath("cupsenable"); eerr == nil {
+			_ = exec.Command(enableBin, printerName).Run()
+		}
+		if acceptBin, aerr := exec.LookPath("cupsaccept"); aerr == nil {
+			_ = exec.Command(acceptBin, printerName).Run()
+		}
+
 		// Local CUPS printing via `lp -d <printerName>`
 		flags := []string{"-d", printerName}
 		if opts.Media != "" {
@@ -1877,6 +1940,52 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
+// fileExtType maps a filename (or bare extension) to its canonical UI file type label.
+func fileExtType(name string) string {
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(name), ".")) {
+	case "pdf":
+		return "PDF"
+	case "png":
+		return "PNG"
+	case "jpg", "jpeg":
+		return "JPG"
+	case "webp":
+		return "WEBP"
+	case "bmp":
+		return "BMP"
+	case "gif":
+		return "GIF"
+	case "tif", "tiff":
+		return "TIFF"
+	case "heic":
+		return "HEIC"
+	case "svg":
+		return "SVG"
+	case "txt":
+		return "TXT"
+	case "csv":
+		return "CSV"
+	case "doc", "docx":
+		return "DOCX"
+	case "xls", "xlsx":
+		return "XLSX"
+	case "ppt", "pptx":
+		return "PPTX"
+	case "odt":
+		return "ODT"
+	case "odp":
+		return "ODP"
+	case "ods":
+		return "ODS"
+	case "rtf":
+		return "RTF"
+	case "html", "htm":
+		return "HTML"
+	default:
+		return ""
+	}
+}
+
 // mimeForFile maps a filename to the CUPS document-format MIME type.
 func mimeForFile(name string) string {
 	ext := strings.ToLower(filepath.Ext(name))
@@ -1887,6 +1996,18 @@ func mimeForFile(name string) string {
 		return "image/png"
 	case ".jpg", ".jpeg":
 		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".bmp":
+		return "image/bmp"
+	case ".tif", ".tiff":
+		return "image/tiff"
+	case ".webp":
+		return "image/webp"
+	case ".heic":
+		return "image/heic"
+	case ".svg":
+		return "image/svg+xml"
 	case ".txt":
 		return "text/plain"
 	case ".doc", ".docx":
@@ -1895,6 +2016,12 @@ func mimeForFile(name string) string {
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 	case ".ppt", ".pptx":
 		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	case ".odt":
+		return "application/vnd.oasis.opendocument.text"
+	case ".ods":
+		return "application/vnd.oasis.opendocument.spreadsheet"
+	case ".odp":
+		return "application/vnd.oasis.opendocument.presentation"
 	case ".html", ".htm":
 		return "text/html"
 	case ".rtf":
@@ -1915,8 +2042,12 @@ func shellQuote(s string) string {
 // and if isGray is true, converts all color spaces into high-contrast DeviceGray.
 func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string) string {
 	ext := strings.ToLower(filepath.Ext(src))
-	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
-	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" || ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls"
+	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
+		ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff" ||
+		ext == ".heic" || ext == ".svg"
+	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" ||
+		ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" ||
+		ext == ".ods" || ext == ".odp" || ext == ".html" || ext == ".htm"
 	isPDF := ext == ".pdf"
 
 	if !isImage && !isDoc && !isPDF {
@@ -1974,9 +2105,78 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		return src
 	}
 
-	// 2) Handling PDF documents: Vector PDFs are already high-fidelity print-ready
-	// CUPS ESC/P-R rasterizer natively handles Ink=MONO at native hardware DPI.
+	// 2) Handling PDF documents: re-distill through ghostscript pdfwrite so
+	// malformed producer metadata (non-integer /Rotate values like 270.000061)
+	// is normalized before cups-filters pdftopdf parses it. pdftopdf aborts on
+	// such files ("Unexpected /Rotate value") or emits mis-cropped pages — both
+	// ending with 0 bytes sent to the hardware while CUPS reports success.
+	if repaired, ok := repairPDFWithGhostscript(src, log); ok {
+		return repaired
+	}
 	return src
+}
+
+// maxSelfContainedPDFBytes caps the always-repair path; larger PDFs skip
+// re-distillation to avoid long dispatch stalls.
+const maxSelfContainedPDFBytes = 32 << 20
+
+var suspiciousRotateRE = regexp.MustCompile(`/\s*Rotate\s+[-+]?\d+\.\d+`)
+
+// pdfHasFloatRotate does a best-effort raw byte scan for non-integer /Rotate
+// page values. Compressed object streams hide the value, so a false negative
+// only means we rely on dispatch-time repair instead.
+func pdfHasFloatRotate(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	return suspiciousRotateRE.Match(data), nil
+}
+
+// repairPDFWithGhostscript rewrites src into a structurally clean PDF using
+// ghostscript pdfwrite. It returns the repaired path and true on success; on
+// any failure it returns ("", false) and the caller keeps the original file.
+func repairPDFWithGhostscript(src string, log *log.Logger) (string, bool) {
+	fi, err := os.Stat(src)
+	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
+		return "", false
+	}
+	gs, err := exec.LookPath("gs")
+	if err != nil {
+		return "", false
+	}
+	dst := strings.TrimSuffix(src, ".pdf") + ".fixed.pdf"
+	args := []string{
+		"-dBATCH", "-dNOPAUSE", "-dSAFER",
+		"-sDEVICE=pdfwrite",
+		"-dCompatibilityLevel=1.6",
+		// Never let ghostscript second-guess page orientation: /Rotate is
+		// rewritten as-is to an integer, content streams stay untouched.
+		"-dAutoRotatePages=/None",
+		"-dColorConversionStrategy=/LeaveColorUnchanged",
+		"-dDownsampleColorImages=false",
+		"-dDownsampleGrayImages=false",
+		"-dDownsampleMonoImages=false",
+		"-sOutputFile=" + dst,
+		src,
+	}
+	out, err := exec.Command(gs, args...).CombinedOutput()
+	if err != nil {
+		if log != nil {
+			log.Printf("repairPDF: gs failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+		}
+		_ = os.Remove(dst)
+		return "", false
+	}
+	chk, err := os.Stat(dst)
+	if err != nil || chk.Size() == 0 {
+		_ = os.Remove(dst)
+		return "", false
+	}
+	if log != nil {
+		log.Printf("repairPDF: %s normalized (%d → %d bytes)", filepath.Base(src), fi.Size(), chk.Size())
+	}
+	return dst, true
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
@@ -2110,7 +2310,9 @@ func (s *Server) handleReorderJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetPriority(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
-	var req struct{ Priority int `json:"priority"` }
+	var req struct {
+		Priority int `json:"priority"`
+	}
 	if err := readJSON(r, &req); err != nil {
 		writeErr(w, 400, "invalid JSON body")
 		return
@@ -2382,7 +2584,9 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4) Image → PDF via ImageMagick
-	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
+	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
+		ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff" ||
+		ext == ".heic" || ext == ".svg"
 	if isImage {
 		tmpPDF := tmpInput + ".pdf"
 		if conv, err := exec.LookPath("convert"); err == nil {
@@ -2398,7 +2602,9 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 
 	// 5) Office doc → PDF via headless LibreOffice
 	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" ||
-		ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" || ext == ".txt" || ext == ".csv"
+		ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" ||
+		ext == ".ods" || ext == ".odp" || ext == ".html" || ext == ".htm" ||
+		ext == ".txt" || ext == ".csv"
 	if isDoc {
 		loCmd := ""
 		if p, err := exec.LookPath("libreoffice"); err == nil {
@@ -2660,4 +2866,3 @@ func (s *Server) handleAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 		"total":   len(hist),
 	})
 }
-

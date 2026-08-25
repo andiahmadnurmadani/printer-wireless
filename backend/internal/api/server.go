@@ -410,87 +410,107 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Health
+	var viewers []string // any authenticated role
+	staff := []string{"admin", "user"}
+	adminOnly := []string{"admin"}
+
+	// Public: liveness probe used pre-login by the web UI.
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true, "time": time.Now(), "cups": s.cfg.CUPSURL != ""})
 	})
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+
+	auth := func(next http.HandlerFunc) http.Handler { return s.authorize(viewers, next) }
+	staffGate := func(next http.HandlerFunc) http.Handler { return s.authorize(staff, next) }
+	adminGate := func(next http.HandlerFunc) http.Handler { return s.authorize(adminOnly, next) }
+
+	mux.Handle("GET /api/auth/me", auth(s.handleMe))
+	mux.Handle("POST /api/auth/change-password", auth(s.handleChangePassword))
 
 	// ── Printers ──
-	mux.HandleFunc("GET /api/printers", s.handleListPrinters)
-	mux.HandleFunc("POST /api/printers", s.handleAddPrinter)
-	mux.HandleFunc("GET /api/printers/{id}", s.handleGetPrinter)
-	mux.HandleFunc("PATCH /api/printers/{id}", s.handlePatchPrinter)
-	mux.HandleFunc("DELETE /api/printers/{id}", s.handleDeletePrinter)
-	mux.HandleFunc("POST /api/printers/{id}/refresh", s.handleRefreshPrinter)
-	mux.HandleFunc("POST /api/printers/{id}/test", s.handleTestPrint)
-	mux.HandleFunc("POST /api/printers/{id}/pause", s.handlePausePrinter)
-	mux.HandleFunc("POST /api/printers/{id}/resume", s.handleResumePrinter)
-	mux.HandleFunc("POST /api/printers/{id}/enable", s.handleEnablePrinter)
-	mux.HandleFunc("POST /api/printers/{id}/disable", s.handleDisablePrinter)
-	mux.HandleFunc("POST /api/printers/{id}/default", s.handleSetDefault)
-	mux.HandleFunc("POST /api/printers/{id}/rename", s.handleRenamePrinter)
-	mux.HandleFunc("GET /api/printers/{id}/health", s.handlePrinterHealth)
-	mux.HandleFunc("GET /api/printers/{id}/ppd-options", s.handleGetPPDOptions)
-	mux.HandleFunc("POST /api/printers/{id}/maintenance/clean-head", s.handleCleanHead)
-	mux.HandleFunc("POST /api/printers/{id}/maintenance/nozzle-check", s.handleNozzleCheck)
+	mux.Handle("GET /api/printers", auth(s.handleListPrinters))
+	mux.Handle("POST /api/printers", adminGate(s.handleAddPrinter))
+	mux.Handle("GET /api/printers/{id}", auth(s.handleGetPrinter))
+	mux.Handle("PATCH /api/printers/{id}", adminGate(s.handlePatchPrinter))
+	mux.Handle("DELETE /api/printers/{id}", adminGate(s.handleDeletePrinter))
+	mux.Handle("POST /api/printers/{id}/refresh", adminGate(s.handleRefreshPrinter))
+	mux.Handle("POST /api/printers/{id}/test", staffGate(s.handleTestPrint))
+	mux.Handle("POST /api/printers/{id}/pause", adminGate(s.handlePausePrinter))
+	mux.Handle("POST /api/printers/{id}/resume", adminGate(s.handleResumePrinter))
+	mux.Handle("POST /api/printers/{id}/enable", adminGate(s.handleEnablePrinter))
+	mux.Handle("POST /api/printers/{id}/disable", adminGate(s.handleDisablePrinter))
+	mux.Handle("POST /api/printers/{id}/default", adminGate(s.handleSetDefault))
+	mux.Handle("POST /api/printers/{id}/rename", adminGate(s.handleRenamePrinter))
+	mux.Handle("GET /api/printers/{id}/health", auth(s.handlePrinterHealth))
+	mux.Handle("GET /api/printers/{id}/ppd-options", auth(s.handleGetPPDOptions))
+	mux.Handle("POST /api/printers/{id}/maintenance/clean-head", adminGate(s.handleCleanHead))
+	mux.Handle("POST /api/printers/{id}/maintenance/nozzle-check", adminGate(s.handleNozzleCheck))
 
 	// ── Discovery ──
-	mux.HandleFunc("POST /api/discovery/scan", s.handleScan)
-	mux.HandleFunc("GET /api/discovery/results", s.handleDiscoveryResults)
-	mux.HandleFunc("POST /api/discovery/{id}/add", s.handleAddDiscovered)
-	mux.HandleFunc("DELETE /api/discovery/{id}", s.handleDeleteDiscovered)
+	mux.Handle("POST /api/discovery/scan", adminGate(s.handleScan))
+	mux.Handle("GET /api/discovery/results", adminGate(s.handleDiscoveryResults))
+	mux.Handle("POST /api/discovery/{id}/add", adminGate(s.handleAddDiscovered))
+	mux.Handle("DELETE /api/discovery/{id}", adminGate(s.handleDeleteDiscovered))
 
 	// ── Real-Time SSE Event Hub (Domain 4) ──
-	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.Handle("GET /api/events", auth(s.handleEvents))
 
 	// ── Jobs (Domain 4 & Domain 5) ──
-	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
-	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
-	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
-	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
-	mux.HandleFunc("POST /api/jobs/{id}/pause", s.handlePauseJob)
-	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResumeJob)
-	mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
-	mux.HandleFunc("POST /api/jobs/{id}/release", s.handleReleaseSecureJob)
-	mux.HandleFunc("POST /api/jobs/{id}/reroute", s.handleRerouteJob)
-	mux.HandleFunc("POST /api/jobs/{id}/purge", s.handlePurgeJob)
-	mux.HandleFunc("POST /api/jobs/reorder", s.handleReorderJobs)
-	mux.HandleFunc("POST /api/jobs/{id}/priority", s.handleSetPriority)
-	mux.HandleFunc("POST /api/jobs/clear", s.handleClearJobs)
-	mux.HandleFunc("DELETE /api/jobs", s.handleClearJobs)
+	mux.Handle("GET /api/jobs", auth(s.handleListJobs))
+	mux.Handle("POST /api/jobs", staffGate(s.handleCreateJob))
+	mux.Handle("GET /api/jobs/{id}", auth(s.handleGetJob))
+	mux.Handle("POST /api/jobs/clear", staffGate(s.handleClearJobs))
+	mux.Handle("POST /api/jobs/reorder", staffGate(s.handleReorderJobs))
+	mux.Handle("DELETE /api/jobs", adminGate(s.handleClearJobs))
+	mux.Handle("POST /api/jobs/{id}/cancel", staffGate(s.handleCancelJob))
+	mux.Handle("POST /api/jobs/{id}/pause", staffGate(s.handlePauseJob))
+	mux.Handle("POST /api/jobs/{id}/resume", staffGate(s.handleResumeJob))
+	mux.Handle("POST /api/jobs/{id}/retry", staffGate(s.handleRetryJob))
+	mux.Handle("POST /api/jobs/{id}/release", staffGate(s.handleReleaseSecureJob))
+	mux.Handle("POST /api/jobs/{id}/reroute", staffGate(s.handleRerouteJob))
+	mux.Handle("POST /api/jobs/{id}/purge", staffGate(s.handlePurgeJob))
+	mux.Handle("POST /api/jobs/{id}/priority", staffGate(s.handleSetPriority))
 
 	// ── History & Analytics (Domain 5) ──
-	mux.HandleFunc("GET /api/history", s.handleListHistory)
-	mux.HandleFunc("DELETE /api/history", s.handleClearHistory)
-	mux.HandleFunc("GET /api/analytics/summary", s.handleAnalyticsSummary)
-	mux.HandleFunc("GET /api/analytics/export", s.handleAnalyticsExport)
+	mux.Handle("GET /api/history", auth(s.handleListHistory))
+	mux.Handle("DELETE /api/history", adminGate(s.handleClearHistory))
+	mux.Handle("GET /api/analytics/summary", auth(s.handleAnalyticsSummary))
+	mux.Handle("GET /api/analytics/export", auth(s.handleAnalyticsExport))
+
+	// ── Users administration ──
+	mux.Handle("GET /api/users", adminGate(s.handleListUsers))
+	mux.Handle("POST /api/users", adminGate(s.handleCreateUser))
+	mux.Handle("PATCH /api/users/{id}", adminGate(s.handlePatchUser))
+	mux.Handle("DELETE /api/users/{id}", adminGate(s.handleDeleteUser))
 
 	// ── Settings ──
-	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
-	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
-	mux.HandleFunc("GET /api/diagnostics/network", s.handleNetworkDiagnostics)
-	mux.HandleFunc("POST /api/settings/reset", s.handleResetData)
+	mux.Handle("GET /api/settings", auth(s.handleGetSettings))
+	mux.Handle("PUT /api/settings", adminGate(s.handlePutSettings))
+	mux.Handle("GET /api/diagnostics/network", adminGate(s.handleNetworkDiagnostics))
+	mux.Handle("POST /api/settings/reset", adminGate(s.handleResetData))
 
 	// ── Document Preview Conversion ──
-	mux.HandleFunc("POST /api/convert/preview", s.handleConvertPreview)
+	mux.Handle("POST /api/convert/preview", staffGate(s.handleConvertPreview))
 
 	// Uploads (served files - safe file server without directory listing)
-	mux.HandleFunc("GET /uploads/", func(w http.ResponseWriter, r *http.Request) {
-		p := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/uploads/"))
-		if p == "" || p == "." || p == "/" {
-			http.NotFound(w, r)
-			return
-		}
-		fullPath := filepath.Join(s.cfg.UploadsDir, p)
-		fi, err := os.Stat(fullPath)
-		if err != nil || fi.IsDir() {
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeFile(w, r, fullPath)
-	})
+	mux.Handle("GET /uploads/", staffGate(http.HandlerFunc(s.serveUploads)))
 
 	return s.logRequests(s.enableCORS(mux))
+}
+
+func (s *Server) serveUploads(w http.ResponseWriter, r *http.Request) {
+	p := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/uploads/"))
+	if p == "" || p == "." || p == "/" {
+		http.NotFound(w, r)
+		return
+	}
+	fullPath := filepath.Join(s.cfg.UploadsDir, p)
+	fi, err := os.Stat(fullPath)
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, fullPath)
 }
 
 // ── helpers ──

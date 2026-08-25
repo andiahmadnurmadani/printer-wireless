@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../context/AppContext'
+import { Only } from '../../context/AuthContext'
 import Button from '../ui/Button'
 import Modal from '../ui/Modal'
 import StatusBadge from '../ui/Badges'
@@ -170,12 +171,14 @@ export default function PrintersPage() {
           </p>
         </div>
         <div className="flex gap-3">
-          <Button variant="vanilla" onClick={startDiscovery} icon={<IconWifi size={17} />}>
-            Scan network
-          </Button>
-          <Button variant="lime" onClick={() => setAddOpen(true)} icon={<IconPlus size={17} />}>
-            Add manually
-          </Button>
+          <Only roles={['admin']}>
+            <Button variant="vanilla" onClick={startDiscovery} icon={<IconWifi size={17} />}>
+              Scan network
+            </Button>
+            <Button variant="lime" onClick={() => setAddOpen(true)} icon={<IconPlus size={17} />}>
+              Add manually
+            </Button>
+          </Only>
         </div>
       </div>
 
@@ -307,75 +310,83 @@ export default function PrintersPage() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 flex-wrap pt-1 mt-auto">
-                  <button
-                    onClick={() => setMaintId(p.id)}
-                    title="Open Maintenance & Diagnostics Center"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 transition-colors font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-[2px_2px_0_0_rgba(56,56,56,1)]"
-                  >
-                    <IconWrench size={14} /> Maintenance
-                  </button>
+                  <Only roles={['admin']}>
+                    <button
+                      onClick={() => setMaintId(p.id)}
+                      title="Open Maintenance & Diagnostics Center"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 transition-colors font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-[2px_2px_0_0_rgba(56,56,56,1)]"
+                    >
+                      <IconWrench size={14} /> Maintenance
+                    </button>
+                  </Only>
                   <button
                     onClick={() => setDetailId(p.id)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
                   >
                     <IconEye size={14} /> Details
                   </button>
-                  <button
-                    onClick={() => { setRenameId(p.id); setRenameVal(p.name) }}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
-                  >
-                    <IconPencil size={14} /> Rename
-                  </button>
-                  {!p.isDefault && (
+                  <Only roles={['admin']}>
                     <button
-                      onClick={() => setDefaultPrinter(p.id)}
-                      title="Set as default"
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-500 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
+                      onClick={() => { setRenameId(p.id); setRenameVal(p.name) }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
                     >
-                      <IconStar size={14} /> Default
+                      <IconPencil size={14} /> Rename
                     </button>
-                  )}
-                  <button
-                    onClick={() => togglePrinterEnable(p.id)}
-                    title={p.enabled ? 'Disable printer' : 'Enable printer'}
-                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 transition-colors font-figtree text-[12.5px] font-semibold cursor-pointer ${
-                      p.enabled ? 'border-dark-black-900 bg-vanilla-100 hover:bg-err-100 hover:text-err-500' : 'border-dark-black-900 bg-ok-100 hover:bg-ok-500 hover:text-white'
-                    }`}
-                  >
-                    <IconPower size={14} /> {p.enabled ? 'Disable' : 'Enable'}
-                  </button>
-                  <button
-                    onClick={() => togglePrinterPause(p.id)}
-                    title={p.paused ? 'Resume printer' : 'Pause printer'}
-                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 transition-colors font-figtree text-[12.5px] font-semibold cursor-pointer ${
-                      p.paused ? 'border-dark-black-900 bg-lime-300 hover:bg-lime-500' : 'border-dark-black-900 bg-vanilla-100 hover:bg-warn-100'
-                    }`}
-                  >
-                    {p.paused ? <IconPlay size={14} /> : <IconPause size={14} />} {p.paused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button
-                    onClick={() => testPrint(p.id)}
-                    title="Ping device & check connection"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
-                  >
-                    <IconWifi size={14} /> Ping Test
-                  </button>
-                  <button
-                    onClick={() => refreshPrinter(p.id)}
-                    title="Refresh status"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
-                  >
-                    <IconRefresh size={14} /> Refresh
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (window.confirm(`Remove "${p.name}" from KroomPrint?`)) removePrinter(p.id)
-                    }}
-                    title="Remove printer"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-err-500 bg-err-100 hover:bg-err-500 hover:text-white transition-colors font-figtree text-[12.5px] font-semibold text-err-500 cursor-pointer ml-auto"
-                  >
-                    <IconTrash size={14} /> Remove
-                  </button>
+                    {!p.isDefault && (
+                      <button
+                        onClick={() => setDefaultPrinter(p.id)}
+                        title="Set as default"
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-500 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
+                      >
+                        <IconStar size={14} /> Default
+                      </button>
+                    )}
+                    <button
+                      onClick={() => togglePrinterEnable(p.id)}
+                      title={p.enabled ? 'Disable printer' : 'Enable printer'}
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 transition-colors font-figtree text-[12.5px] font-semibold cursor-pointer ${
+                        p.enabled ? 'border-dark-black-900 bg-vanilla-100 hover:bg-err-100 hover:text-err-500' : 'border-dark-black-900 bg-ok-100 hover:bg-ok-500 hover:text-white'
+                      }`}
+                    >
+                      <IconPower size={14} /> {p.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      onClick={() => togglePrinterPause(p.id)}
+                      title={p.paused ? 'Resume printer' : 'Pause printer'}
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 transition-colors font-figtree text-[12.5px] font-semibold cursor-pointer ${
+                        p.paused ? 'border-dark-black-900 bg-lime-300 hover:bg-lime-500' : 'border-dark-black-900 bg-vanilla-100 hover:bg-warn-100'
+                      }`}
+                    >
+                      {p.paused ? <IconPlay size={14} /> : <IconPause size={14} />} {p.paused ? 'Resume' : 'Pause'}
+                    </button>
+                  </Only>
+                  <Only roles={['admin', 'user']}>
+                    <button
+                      onClick={() => testPrint(p.id)}
+                      title="Ping device & check connection"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
+                    >
+                      <IconWifi size={14} /> Ping Test
+                    </button>
+                  </Only>
+                  <Only roles={['admin']}>
+                    <button
+                      onClick={() => refreshPrinter(p.id)}
+                      title="Refresh status"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 transition-colors font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
+                    >
+                      <IconRefresh size={14} /> Refresh
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`Remove "${p.name}" from KroomPrint?`)) removePrinter(p.id)
+                      }}
+                      title="Remove printer"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[10px] border-2 border-err-500 bg-err-100 hover:bg-err-500 hover:text-white transition-colors font-figtree text-[12.5px] font-semibold text-err-500 cursor-pointer ml-auto"
+                    >
+                      <IconTrash size={14} /> Remove
+                    </button>
+                  </Only>
                 </div>
               </div>
             )

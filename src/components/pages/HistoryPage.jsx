@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useApp } from '../../context/AppContext'
+import { Only } from '../../context/AuthContext'
 import { api } from '../../api/client'
 import Button from '../ui/Button'
 import Modal from '../ui/Modal'
@@ -176,13 +177,15 @@ export default function HistoryPage() {
                           <IconSearch size={13} />
                         </button>
                         {h.status === 'failed' && (
-                          <button
-                            onClick={() => retryJob(h.id)}
-                            className="inline-flex items-center gap-1 px-2.5 h-8 rounded-[9px] border border-dark-black-900 bg-lime-300 hover:bg-lime-500 font-figtree text-[11.5px] font-semibold text-dark-black-900 cursor-pointer"
-                            title="Retry job"
-                          >
-                            <IconPlay size={12} /> Retry
-                          </button>
+                          <Only roles={['admin', 'user']}>
+                            <button
+                              onClick={() => retryJob(h.id)}
+                              className="inline-flex items-center gap-1 px-2.5 h-8 rounded-[9px] border border-dark-black-900 bg-lime-300 hover:bg-lime-500 font-figtree text-[11.5px] font-semibold text-dark-black-900 cursor-pointer"
+                              title="Retry job"
+                            >
+                              <IconPlay size={12} /> Retry
+                            </button>
+                          </Only>
                         )}
                       </div>
                     </td>

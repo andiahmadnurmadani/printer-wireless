@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useApp } from '../../context/AppContext'
+import { Only } from '../../context/AuthContext'
 import Button from '../ui/Button'
 import Modal from '../ui/Modal'
 import {
@@ -132,6 +133,11 @@ export default function SettingsPage() {
 
   return (
     <div className="flex flex-col gap-7">
+      <Only roles={['guest']}>
+        <div className="p-3.5 rounded-[12px] border-2 border-dark-black-900/30 bg-vanilla-100 font-figtree text-[13px] text-dark-black-900/70">
+          You are signed in as <b>Guest</b> — settings are read-only for your role. Contact an administrator to change them.
+        </div>
+      </Only>
       <div>
         <div className="flex items-center gap-2 mb-1.5">
           <span className="w-[14px] h-[14px] bg-lime-300 border border-dark-black-900 rounded-[2px] inline-block" />
@@ -304,29 +310,31 @@ export default function SettingsPage() {
         </Section>
 
         {/* ── Danger zone ── */}
-        <div className="xl:col-span-2">
-          <Section title="Danger Zone" desc="Destructive workspace operations — proceed with caution.">
-            <div className="flex items-center justify-between gap-4 p-4 rounded-[14px] border-2 border-err-500 bg-err-100 flex-wrap sm:flex-nowrap">
-              <div>
-                <div className="font-figtree font-bold text-[15px] text-err-500">Reset All Workspace Data</div>
-                <div className="font-figtree font-light text-err-500/80 text-[13px] mt-0.5">
-                  Purges all active queue jobs, clears print history logs, and resets settings to clean defaults.
+        <Only roles={['admin']}>
+          <div className="xl:col-span-2">
+            <Section title="Danger Zone" desc="Destructive workspace operations — proceed with caution.">
+              <div className="flex items-center justify-between gap-4 p-4 rounded-[14px] border-2 border-err-500 bg-err-100 flex-wrap sm:flex-nowrap">
+                <div>
+                  <div className="font-figtree font-bold text-[15px] text-err-500">Reset All Workspace Data</div>
+                  <div className="font-figtree font-light text-err-500/80 text-[13px] mt-0.5">
+                    Purges all active queue jobs, clears print history logs, and resets settings to clean defaults.
+                  </div>
                 </div>
+                <Button
+                  variant="danger"
+                  size="md"
+                  onClick={() => {
+                    setResetConfirmed(false)
+                    setResetOpen(true)
+                  }}
+                  icon={<IconTrash size={16} />}
+                >
+                  Reset Data
+                </Button>
               </div>
-              <Button
-                variant="danger"
-                size="md"
-                onClick={() => {
-                  setResetConfirmed(false)
-                  setResetOpen(true)
-                }}
-                icon={<IconTrash size={16} />}
-              >
-                Reset Data
-              </Button>
-            </div>
-          </Section>
-        </div>
+            </Section>
+          </div>
+        </Only>
       </div>
 
       {/* ── Diagnostics Modal ── */}

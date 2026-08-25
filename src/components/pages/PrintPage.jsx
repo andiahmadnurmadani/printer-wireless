@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../../context/AppContext'
+import { useAuth } from '../../context/AuthContext'
 import { api } from '../../api/client'
 import Button from '../ui/Button'
 import Modal from '../ui/Modal'
@@ -85,6 +86,7 @@ function Toggle({ label, desc, hint, checked, onChange, disabled }) {
 }
 
 export default function PrintPage({ onNavigate }) {
+  const { isStaff } = useAuth()
   const { printers, submitJob, defaultPrinter, toast } = useApp()
   const fileInputRef = useRef(null)
 
@@ -280,6 +282,10 @@ export default function PrintPage({ onNavigate }) {
   }, [effColor, pageCount, copies, duplex, manualDuplex])
 
   const handleSubmit = () => {
+    if (!isStaff) {
+      toast('Guest accounts cannot send print jobs.', 'error')
+      return
+    }
     if (!file) {
       toast('Please add a document first', 'error')
       return
@@ -425,6 +431,11 @@ export default function PrintPage({ onNavigate }) {
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Left Column: Dropzone & Interactive Print Sheet Simulation (7 cols) */}
         <div className="xl:col-span-7 flex flex-col gap-5">
+          {!isStaff && (
+            <div className="p-3.5 rounded-[12px] border-2 border-dark-black-900/30 bg-vanilla-100 font-figtree text-[13px] text-dark-black-900/70">
+              You are signed in as <b>Guest</b> — viewing is allowed, printing is disabled.
+            </div>
+          )}
           {!file ? (
             /* Upload Dropzone */
             <div

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useApp } from '../../context/AppContext'
+import { Only } from '../../context/AuthContext'
 import Button from '../ui/Button'
 import Modal from '../ui/Modal'
 import { FileTypeBadge } from '../ui/Badges'
@@ -159,26 +160,28 @@ export default function QueuePage() {
                   )}
 
                   {/* Priority */}
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <span className="font-figtree text-[11px] font-medium text-dark-black-900/50 uppercase tracking-wide">Priority</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => setJobPriority(job.id, Math.max(1, (job.priority || 3) - 1))}
-                        className="w-7 h-7 rounded-[8px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
-                      >
-                        <IconChevronDown size={14} />
-                      </button>
-                      <span className={`min-w-[34px] h-[26px] px-1.5 rounded-[8px] border border-dark-black-900 flex items-center justify-center text-[11px] font-bold font-geist ${priorityMeta[job.priority]?.cls || 'bg-vanilla-300'}`}>
-                        {priorityMeta[job.priority]?.label || 'Normal'}
-                      </span>
-                      <button
-                        onClick={() => setJobPriority(job.id, Math.min(5, (job.priority || 3) + 1))}
-                        className="w-7 h-7 rounded-[8px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
-                      >
-                        <IconChevronUp size={14} />
-                      </button>
+                  <Only roles={['admin', 'user']}>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-figtree text-[11px] font-medium text-dark-black-900/50 uppercase tracking-wide">Priority</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setJobPriority(job.id, Math.max(1, (job.priority || 3) - 1))}
+                          className="w-7 h-7 rounded-[8px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
+                        >
+                          <IconChevronDown size={14} />
+                        </button>
+                        <span className={`min-w-[34px] h-[26px] px-1.5 rounded-[8px] border border-dark-black-900 flex items-center justify-center text-[11px] font-bold font-geist ${priorityMeta[job.priority]?.cls || 'bg-vanilla-300'}`}>
+                          {priorityMeta[job.priority]?.label || 'Normal'}
+                        </span>
+                        <button
+                          onClick={() => setJobPriority(job.id, Math.min(5, (job.priority || 3) + 1))}
+                          className="w-7 h-7 rounded-[8px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
+                        >
+                          <IconChevronUp size={14} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  </Only>
 
                   {/* Actions */}
                   <div className="flex items-center gap-2 shrink-0">
@@ -192,62 +195,68 @@ export default function QueuePage() {
 
                     {/* Domain 5: Secure Release PIN action */}
                     {job.status === 'held-secure' && (
-                      <button
-                        onClick={() => {
-                          setReleaseJob(job)
-                          setEnteredPin('')
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-amber-300 hover:bg-amber-400 font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-xs"
-                      >
-                        🔒 Release PIN
-                      </button>
+                      <Only roles={['admin', 'user']}>
+                        <button
+                          onClick={() => {
+                            setReleaseJob(job)
+                            setEnteredPin('')
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-amber-300 hover:bg-amber-400 font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-xs"
+                        >
+                          🔒 Release PIN
+                        </button>
+                      </Only>
                     )}
 
                     {/* Domain 4: Re-route Printer action */}
                     {['queued', 'paused', 'failed', 'held-secure'].includes(job.status) && (
-                      <button
-                        onClick={() => {
-                          setRerouteJobTarget(job)
-                          setSelectedReroutePrinterId(job.printerId)
-                        }}
-                        className="w-9 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 flex items-center justify-center cursor-pointer"
-                        title="Re-route to another printer"
-                      >
-                        <IconRefresh size={16} />
-                      </button>
+                      <Only roles={['admin', 'user']}>
+                        <button
+                          onClick={() => {
+                            setRerouteJobTarget(job)
+                            setSelectedReroutePrinterId(job.printerId)
+                          }}
+                          className="w-9 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 flex items-center justify-center cursor-pointer"
+                          title="Re-route to another printer"
+                        >
+                          <IconRefresh size={16} />
+                        </button>
+                      </Only>
                     )}
 
-                    {job.status === 'paused' ? (
-                      <button
-                        onClick={() => resumeJob(job.id)}
-                        className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-500 font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
-                      >
-                        <IconPlay size={14} /> Resume
-                      </button>
-                    ) : job.status === 'printing' || job.status === 'queued' ? (
-                      <>
+                    <Only roles={['admin', 'user']}>
+                      {job.status === 'paused' ? (
                         <button
-                          onClick={() => pauseJob(job.id)}
-                          className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-warn-100 font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
+                          onClick={() => resumeJob(job.id)}
+                          className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-500 font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
                         >
-                          <IconPause size={14} /> Pause
+                          <IconPlay size={14} /> Resume
                         </button>
+                      ) : job.status === 'printing' || job.status === 'queued' ? (
+                        <>
+                          <button
+                            onClick={() => pauseJob(job.id)}
+                            className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-warn-100 font-figtree text-[12.5px] font-semibold text-dark-black-900 cursor-pointer"
+                          >
+                            <IconPause size={14} /> Pause
+                          </button>
+                          <button
+                            onClick={() => cancelJob(job.id)}
+                            className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-err-500 bg-err-100 hover:bg-err-500 hover:text-white font-figtree text-[12.5px] font-semibold text-err-500 cursor-pointer"
+                          >
+                            <IconTrash size={14} /> Cancel
+                          </button>
+                        </>
+                      ) : (job.status === 'failed' || job.status === 'cancelled') ? (
                         <button
-                          onClick={() => cancelJob(job.id)}
-                          className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-err-500 bg-err-100 hover:bg-err-500 hover:text-white font-figtree text-[12.5px] font-semibold text-err-500 cursor-pointer"
+                          onClick={() => purgeJob(job.id)}
+                          className="inline-flex items-center gap-1.5 px-3 h-9 rounded-[10px] border-2 border-dark-black-900/40 bg-vanilla-100 hover:bg-err-100 text-dark-black-900/70 hover:text-err-500 font-figtree text-[12px] font-semibold cursor-pointer"
+                          title="Purge spool file & job"
                         >
-                          <IconTrash size={14} /> Cancel
+                          Purge
                         </button>
-                      </>
-                    ) : (job.status === 'failed' || job.status === 'cancelled') ? (
-                      <button
-                        onClick={() => purgeJob(job.id)}
-                        className="inline-flex items-center gap-1.5 px-3 h-9 rounded-[10px] border-2 border-dark-black-900/40 bg-vanilla-100 hover:bg-err-100 text-dark-black-900/70 hover:text-err-500 font-figtree text-[12px] font-semibold cursor-pointer"
-                        title="Purge spool file & job"
-                      >
-                        Purge
-                      </button>
-                    ) : null}
+                      ) : null}
+                    </Only>
                   </div>
                 </div>
 

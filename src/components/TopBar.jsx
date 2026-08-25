@@ -5,8 +5,8 @@ import { IconSearch, IconWifi, IconChevronDown, IconLogout, IconPrinter } from '
 /**
  * Top bar — search, connection status, user menu.
  */
-export default function TopBar({ onNavigate, onLogout, onMenu }) {
-  const { printers, activeCount, jobs, defaultPrinter, toast } = useApp()
+export default function TopBar({ onNavigate, onLogout, onMenu, user }) {
+  const { printers, activeCount, jobs } = useApp()
   const [userOpen, setUserOpen] = useState(false)
   const [q, setQ] = useState('')
 
@@ -94,11 +94,11 @@ export default function TopBar({ onNavigate, onLogout, onMenu }) {
           className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors cursor-pointer"
         >
           <div className="w-9 h-9 rounded-[10px] bg-lime-300 border border-dark-black-900 flex items-center justify-center font-bold text-[12.5px] text-dark-black-900">
-            AA
+            {(user?.username || '?').slice(0, 2).toUpperCase()}
           </div>
           <span className="hidden sm:block text-left leading-tight">
-            <span className="block font-figtree font-semibold text-[13px] text-dark-black-900">Andi Ahmad</span>
-            <span className="block font-geist text-[10px] text-dark-black-900/50 uppercase tracking-wide">Owner</span>
+            <span className="block font-figtree font-semibold text-[13px] text-dark-black-900">{user?.username || 'User'}</span>
+            <span className="block font-geist text-[10px] text-dark-black-900/50 uppercase tracking-wide">{user?.role || ''}</span>
           </span>
           <IconChevronDown size={15} className="text-dark-black-900/60" />
         </button>
@@ -108,8 +108,8 @@ export default function TopBar({ onNavigate, onLogout, onMenu }) {
             <div className="fixed inset-0 z-40" onClick={() => setUserOpen(false)} />
             <div className="absolute right-0 top-full mt-2 w-[230px] bg-vanilla-100 border-2 border-dark-black-900 rounded-[14px] shadow-xl overflow-hidden z-50 modal-in">
               <div className="px-4 py-3.5 border-b border-dark-black-900/10">
-                <div className="font-figtree font-semibold text-[14px] text-dark-black-900">Andi Ahmad</div>
-                <div className="font-figtree font-light text-dark-black-900/50 text-[12px]">andi@kroomprint.app</div>
+                <div className="font-figtree font-semibold text-[14px] text-dark-black-900">{user?.username || 'User'}</div>
+                <div className="font-figtree font-light text-dark-black-900/50 text-[12px] capitalize">{user?.role || ''} account</div>
               </div>
               <div className="p-2 flex flex-col">
                 <button
@@ -119,7 +119,7 @@ export default function TopBar({ onNavigate, onLogout, onMenu }) {
                   Settings
                 </button>
                 <button
-                  onClick={() => { setUserOpen(false); toast('Signed out (demo)', 'info'); onLogout() }}
+                  onClick={() => { setUserOpen(false); onLogout() }}
                   className="w-full text-left px-3 py-2.5 rounded-[10px] hover:bg-err-100 font-figtree text-[13.5px] font-medium text-err-500 cursor-pointer"
                 >
                   Sign out

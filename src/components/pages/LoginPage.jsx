@@ -1,31 +1,33 @@
 import { useState } from 'react'
-import { useApp } from '../../context/AppContext'
+import { useAuth } from '../../context/AuthContext'
 import { IconPrinter, IconWifi, IconArrowRight } from '../ui/icons'
 
 /**
  * Login screen — KroomPrint branding, Bugster design language.
  */
-export default function LoginPage({ onLogin }) {
-  const { toast } = useApp()
-  const [email, setEmail] = useState('andi@kroomprint.app')
-  const [password, setPassword] = useState('kroomprint')
+export default function LoginPage() {
+  const { login } = useAuth()
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
-    if (!email.trim() || !password.trim()) {
-      setError('Please enter your email and password.')
+    if (!username.trim() || !password.trim()) {
+      setError('Please enter your username and password.')
       return
     }
     setLoading(true)
-    setTimeout(() => {
+    try {
+      await login(username.trim(), password)
+    } catch (err) {
+      setError(err.message || 'Sign-in failed.')
+    } finally {
       setLoading(false)
-      toast('Welcome back, Andi!', 'success')
-      onLogin()
-    }, 900)
+    }
   }
 
   return (
@@ -67,15 +69,15 @@ export default function LoginPage({ onLogin }) {
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <label className="flex flex-col gap-1.5">
-              <span className="font-figtree text-[13px] font-medium text-dark-black-900">Email</span>
+              <span className="font-figtree text-[13px] font-medium text-dark-black-900">Username</span>
               <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                id="username"
+                name="username"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
                 className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[12px] px-4 py-3 font-figtree text-[14.5px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
               />
             </label>
@@ -101,16 +103,6 @@ export default function LoginPage({ onLogin }) {
                 </button>
               </div>
             </label>
-
-            <div className="flex items-center justify-between text-[13px] font-figtree">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" defaultChecked className="w-4 h-4 accent-dark-black-900" />
-                <span className="text-dark-black-900/70 font-medium">Remember me</span>
-              </label>
-              <button type="button" onClick={() => toast('Password reset link sent (demo)', 'info')} className="font-semibold text-dark-black-900/80 underline underline-offset-4 hover:text-dark-black-900 cursor-pointer">
-                Forgot password?
-              </button>
-            </div>
 
             <button
               type="submit"

@@ -4,9 +4,25 @@
 
 const BASE = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8088` : 'http://localhost:8088')
 
+const TOKEN_KEY = 'kroomprint_token'
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || ''
+}
+
+export function setToken(t) {
+  if (t) localStorage.setItem(TOKEN_KEY, t)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+
+function authHeaders(extra = {}) {
+  const t = getToken()
+  return t ? { Authorization: `Bearer ${t}`, ...extra } : extra
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
     ...options,
   })
   if (!res.ok) {
@@ -30,6 +46,7 @@ export const api = {
     fd.append('file', file)
     return fetch(`${BASE}/api/convert/preview`, {
       method: 'POST',
+      headers: authHeaders(),
       body: fd,
     }).then(async (res) => {
       if (!res.ok) {
@@ -81,6 +98,7 @@ export const api = {
       fd.append('job', JSON.stringify(payload))
       return fetch(`${BASE}/api/jobs`, {
         method: 'POST',
+        headers: authHeaders(),
         body: fd,
       }).then(async (res) => {
         if (!res.ok) {
@@ -121,7 +139,8 @@ export const api = {
   // Real-Time SSE Streaming
   subscribeEvents: (onMessage) => {
     try {
-      const es = new EventSource(`${BASE}/api/events`)
+      const t = encodeURIComponent(getToken())
+      const es = new EventSource(`${BASE}/api/events${t ? `?token=${t}` : ''}`)
       es.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data)
@@ -151,4 +170,24 @@ export const api = {
       return () => {}
     }
   },
+
+  // ── Auth & Users ──
+  login: async (username, password) => {
+    const res = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    })
+    setToken(res.token || '')
+    return res
+  },
+  me: () => request('/api/auth/me'),
+  changePassword: (oldPassword, newPassword) =>
+    request('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
+  listUsers: () => request('/api/users'),
+  createUser: (payload) => request('/api/users', { method: 'POST', body: JSON.stringify(payload) }),
+  updateUser: (id, patch) => request(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteUser: (id) => request(`/api/users/${id}`, { method: 'DELETE' }),
 }

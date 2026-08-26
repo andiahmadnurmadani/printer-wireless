@@ -2373,10 +2373,12 @@ func pdfToPageImages(src string, gray bool) ([]string, string, error) {
 		device = "pnggray"
 	}
 	out := filepath.Join(dir, "p-%02d.png")
+	// No TextAlphaBits/GraphicsAlphaBits: antialiased glyph edges turn into
+	// light-gray pixels that the ESC/P-R threshold washes out — tables print,
+	// text vanishes. Crisp unantialiased glyphs at 300dpi survive the driver.
 	render := exec.Command(gs,
 		"-dSAFER", "-dNOPAUSE", "-dBATCH",
-		"-sDEVICE="+device, "-r200",
-		"-dTextAlphaBits=4", "-dGraphicsAlphaBits=4",
+		"-sDEVICE="+device, "-r300",
 		"-sOutputFile="+out, src,
 	)
 	if outB, cerr := render.CombinedOutput(); cerr != nil {
@@ -2389,6 +2391,14 @@ func pdfToPageImages(src string, gray bool) ([]string, string, error) {
 		return nil, "", errors.New("gs render produced no pages")
 	}
 	sort.Strings(pages)
+
+	// Contrast push so anti-aliased remnants commit to black instead of
+	// falling below the driver's tone threshold.
+	if conv, cerr := exec.LookPath("convert"); cerr == nil {
+		for _, p := range pages {
+			_ = exec.Command(conv, p, "-level", "55%,97%", p).Run()
+		}
+	}
 	return pages, dir, nil
 }
 

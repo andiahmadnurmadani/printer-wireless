@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -88,6 +89,10 @@ type Server struct {
 	printerLocks sync.Map   // map[string]*sync.Mutex (Hardware Concurrency Lock)
 	hub          *ClientHub // Real-Time SSE Event Hub
 	bootTime     time.Time
+
+	dispatchMu sync.Mutex
+	dispatchAt map[string]int64 // jobID → ms timestamp of last dispatch attempt
+	retryCount map[string]int   // jobID → fast-completion retries issued
 }
 
 type scanState struct {
@@ -106,6 +111,8 @@ func New(cfg *config.Config, st *store.Store, logger *log.Logger) *Server {
 		previewCache: make(map[string]previewCacheEntry),
 		hub:          newClientHub(),
 		bootTime:     time.Now(),
+		dispatchAt:   make(map[string]int64),
+		retryCount:   make(map[string]int),
 	}
 	// Evict stale cache entries every 10 minutes
 	go func() {
@@ -181,6 +188,10 @@ func (s *Server) syncCupsJobStatus() {
 
 		switch outcome.state {
 		case "completed":
+			if s.shouldRetryFastComplete(&j) {
+				s.requeueFastFailJob(&j, p)
+				continue
+			}
 			s.finishJobTerminal(&j, "completed", "", 100, true)
 
 		case "canceled":
@@ -345,6 +356,66 @@ func estimatedPrintProgress(j *store.Job) int {
 		prog = 98.0
 	}
 	return int(prog)
+}
+
+// fastCompleteSuspicionMs is the minimum plausible wall-clock span between a
+// dispatch attempt and a physical one-page completion. Real prints feed paper
+// for at least several seconds; silent CUPS failures complete almost instantly.
+const fastCompleteSuspicionMs = int64(4000)
+
+const maxFastCompleteRetries = 2
+
+// shouldRetryFastComplete reports whether a "completed" verdict arrived so
+// quickly after dispatch that no physical output can have occurred, and the
+// job still has auto-retry budget left.
+func (s *Server) shouldRetryFastComplete(j *store.Job) bool {
+	if j.Pages <= 0 || j.FilePath == "" {
+		return false
+	}
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	started, ok := s.dispatchAt[j.ID]
+	if !ok {
+		return false
+	}
+	if time.Now().UnixMilli()-started < fastCompleteSuspicionMs && s.retryCount[j.ID] < maxFastCompleteRetries {
+		return true
+	}
+	return false
+}
+
+// requeueFastFailJob resets a suspiciously-finished job back to queued and
+// kicks off another dispatch attempt.
+func (s *Server) requeueFastFailJob(j *store.Job, p store.Printer) {
+	s.dispatchMu.Lock()
+	s.retryCount[j.ID]++
+	attempt := s.retryCount[j.ID]
+	s.dispatchMu.Unlock()
+
+	_ = s.store.PatchJobStatus(j.ID, "queued")
+	j.Status = "queued"
+	j.Progress = 0
+	if s.hub != nil {
+		s.hub.Broadcast("job_updated", *j)
+	}
+	s.log.Printf("job %s (%s) suspicious fast completion — auto-retry attempt %d", j.Name, j.ID[:8], attempt)
+
+	req := createJobReq{
+		PrinterID:   j.PrinterID,
+		FileName:    j.Name,
+		FileType:    j.FileType,
+		Pages:       j.Pages,
+		Copies:      j.Copies,
+		Color:       j.Color,
+		Duplex:      j.Duplex,
+		PaperSize:   j.PaperSize,
+		Orientation: j.Orientation,
+		Quality:     j.Quality,
+		Scaling:     j.Scaling,
+		PageRange:   j.PageRange,
+		Priority:    j.Priority,
+	}
+	go s.dispatchPrintJob(j.ID, j.FilePath, req, p, j.Name)
 }
 
 // finishJobTerminal applies a final status to a job, records history and
@@ -1691,6 +1762,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 // dispatchPrintJob runs document conversion & CUPS spooling asynchronously in background
 func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobReq, p store.Printer, name string) {
+	s.dispatchMu.Lock()
+	s.dispatchAt[jobID] = time.Now().UnixMilli()
+	s.dispatchMu.Unlock()
+
 	if filePath == "" {
 		return
 	}
@@ -1742,6 +1817,29 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
 		opts.FileType = "application/pdf"
 	}
+
+	// Flatten PDFs to per-page images before spooling: this producer's
+	// documents either crash pdftopdf or render as an empty mis-cropped page
+	// through every structural repair tried, while image inputs go through
+	// imagetoraster reliably and physically print.
+	printFiles := []string{filePath}
+	var pngDir string
+	if strings.EqualFold(filepath.Ext(filePath), ".pdf") {
+		if pages, dir, rerr := pdfToPageImages(filePath, isGray); rerr == nil && len(pages) > 0 {
+			printFiles = pages
+			pngDir = dir
+			if s.log != nil {
+				s.log.Printf("dispatch: %s flattened to %d page image(s)", filepath.Base(filePath), len(pages))
+			}
+		} else if s.log != nil {
+			s.log.Printf("dispatch: flatten unavailable for %s (%v), spooling original", filepath.Base(filePath), rerr)
+		}
+	}
+	defer func() {
+		if pngDir != "" {
+			_ = os.RemoveAll(pngDir)
+		}
+	}()
 
 	var cupsJobID int
 	var submitErr error
@@ -1827,8 +1925,15 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		if opts.JobName != "" {
 			flags = append(flags, "-t", opts.JobName)
 		}
-		flags = append(flags, filePath)
+		flags = append(flags, printFiles...)
 		cmd := exec.Command(lp, flags...)
+		if os.Getenv("LANG") == "" || os.Getenv("LANG") == "C" {
+			// PM2-spawned processes may lack a locale; a locale-less filter
+			// chain silently produces zero bytes while CUPS reports success.
+			cmd.Env = append(os.Environ(),
+				"LANG=en_US.UTF-8", "LANGUAGE=en_US:en", "LC_ALL=C.UTF-8",
+			)
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			submitErr = fmt.Errorf("local lp failed: %v (%s)", err, strings.TrimSpace(string(out)))
@@ -2134,23 +2239,14 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 	return ensurePrintablePDF(src, log)
 }
 
-// ensurePrintablePDF returns the best-effort printable variant of src:
-// untouched when healthy; re-distilled when a re-distill clears the defect;
-// image-rebuilt when even that fails. Falls back to src on any tool failure.
+// ensurePrintablePDF returns the best-effort printable variant of src.
+// Every PDF is rebuilt from rendered page images unconditionally. Two live
+// incidents proved structural fixes insufficient: producer defects here
+// include both non-integer /Rotate values AND mis-derived crop boxes, each
+// silently ending in "Sent 0 bytes" while CUPS reports success. Rendering at
+// 200dpi trades vector fidelity for guaranteed delivery and matches what the
+// previously-working pipeline did for these documents.
 func ensurePrintablePDF(src string, log *log.Logger) string {
-	bad, err := pdfHasFloatRotate(src)
-	if err != nil || !bad {
-		return src
-	}
-	if fixed, ok := repairPDFWithGhostscript(src, log); ok {
-		if stillBad, serr := pdfHasFloatRotate(fixed); serr == nil && !stillBad {
-			return fixed
-		}
-		_ = os.Remove(fixed)
-		if log != nil {
-			log.Printf("ensurePrintablePDF: re-distill kept float /Rotate for %s, falling back to rasterize", filepath.Base(src))
-		}
-	}
 	if ras, ok := rasterizePDFRepair(src, log); ok {
 		return ras
 	}
@@ -2220,53 +2316,32 @@ func repairPDFWithGhostscript(src string, log *log.Logger) (string, bool) {
 	return dst, true
 }
 
-// rasterizePDFRepair rebuilds a broken PDF by rendering each page to an image
-// and reassembling them into a fresh document. Last resort for producer
-// defects that pdfwrite preserves (e.g. non-integer /Rotate), trading vector
-// fidelity for guaranteed printability.
+// rasterizePDFRepair rebuilds a broken PDF by rendering every page to an
+// image and writing a fresh flat document. Last resort for producer defects
+// that crash or silently empty cups-filters pdftopdf (float /Rotate, bad crop
+// boxes), trading vector fidelity for guaranteed delivery.
 func rasterizePDFRepair(src string, log *log.Logger) (string, bool) {
 	fi, err := os.Stat(src)
 	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
 		return "", false
 	}
-	gs, err := exec.LookPath("gs")
+	conv, err := exec.LookPath("convert")
 	if err != nil {
 		return "", false
 	}
-	tmpDir, err := os.MkdirTemp(filepath.Dir(src), "kp-ras-*")
-	if err != nil {
-		return "", false
-	}
-	defer os.RemoveAll(tmpDir)
-
-	pngPattern := filepath.Join(tmpDir, "p-%02d.png")
-	if out, err := exec.Command(gs,
-		"-dSAFER", "-dNOPAUSE", "-dBATCH",
-		"-sDEVICE=png16m", "-r200",
-		"-dTextAlphaBits=4", "-dGraphicsAlphaBits=4",
-		"-sOutputFile="+pngPattern, src,
-	).CombinedOutput(); err != nil {
-		if log != nil {
-			log.Printf("rasterizeRepair: render failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
-		}
-		return "", false
-	}
-	pages, err := filepath.Glob(filepath.Join(tmpDir, "p-*.png"))
-	if err != nil || len(pages) == 0 {
-		return "", false
-	}
-	sort.Strings(pages)
-
 	dst := strings.TrimSuffix(src, ".pdf") + ".ras.pdf"
-	args := append([]string{
-		"-dSAFER", "-dNOPAUSE", "-dBATCH", "-q",
-		"-sDEVICE=pdfwrite",
-		"-dAutoRotatePages=/None",
-		"-sOutputFile=" + dst,
-	}, pages...)
-	if out, err := exec.Command(gs, args...).CombinedOutput(); err != nil {
+	args := []string{
+		"-density", "200",
+		src,
+		"-background", "white",
+		"-alpha", "off",
+		"-compress", "zip",
+		dst,
+	}
+	out, err := exec.Command(conv, args...).CombinedOutput()
+	if err != nil {
 		if log != nil {
-			log.Printf("rasterizeRepair: assemble failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+			log.Printf("rasterizeRepair: convert failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
 		}
 		_ = os.Remove(dst)
 		return "", false
@@ -2277,9 +2352,44 @@ func rasterizePDFRepair(src string, log *log.Logger) (string, bool) {
 		return "", false
 	}
 	if log != nil {
-		log.Printf("rasterizeRepair: %s rebuilt from %d rendered page(s) (%d bytes)", filepath.Base(src), len(pages), chk.Size())
+		log.Printf("rasterizeRepair: %s rebuilt as image-PDF (%d → %d bytes)", filepath.Base(src), fi.Size(), chk.Size())
 	}
 	return dst, true
+}
+
+// pdfToPageImages renders every page of src to a PNG at 200dpi and returns
+// the sorted page paths plus their temp directory (caller removes it).
+func pdfToPageImages(src string, gray bool) ([]string, string, error) {
+	gs, err := exec.LookPath("gs")
+	if err != nil {
+		return nil, "", err
+	}
+	dir, err := os.MkdirTemp(filepath.Dir(src), "kp-pages-*")
+	if err != nil {
+		return nil, "", err
+	}
+	device := "png16m"
+	if gray {
+		device = "pnggray"
+	}
+	out := filepath.Join(dir, "p-%02d.png")
+	render := exec.Command(gs,
+		"-dSAFER", "-dNOPAUSE", "-dBATCH",
+		"-sDEVICE="+device, "-r200",
+		"-dTextAlphaBits=4", "-dGraphicsAlphaBits=4",
+		"-sOutputFile="+out, src,
+	)
+	if outB, cerr := render.CombinedOutput(); cerr != nil {
+		_ = os.RemoveAll(dir)
+		return nil, "", fmt.Errorf("gs render: %v: %s", cerr, strings.TrimSpace(string(outB)))
+	}
+	pages, err := filepath.Glob(filepath.Join(dir, "p-*.png"))
+	if err != nil || len(pages) == 0 {
+		_ = os.RemoveAll(dir)
+		return nil, "", errors.New("gs render produced no pages")
+	}
+	sort.Strings(pages)
+	return pages, dir, nil
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {

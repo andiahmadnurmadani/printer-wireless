@@ -22,8 +22,15 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
 ### Amba (CUPS Host & Production Runner)
 - **Host:** `amba` (ZeroTier IP: `100.90.80.85` / LAN: `192.168.138.60`)
 - **Credentials:** User `amba`, password `kolab777`
-- **Runner:** PM2 (Name: `kroomprint-api`, ID: `3`)
+- **Runner:** PM2 (Name: `kroomprint-api`; ID bisa berubah setelah delete/start — selalu cek `pm2 ls`)
 - **Fungsi Utama:** Menerima file upload dari frontend, melakukan konversi/pemrosesan (Go backend), dan mendispatch print job ke daemon lokal CUPS via binary `lp`.
+- **SQLite produksi:** `/home/amba/kroomprint-data/kroomprint.db` (disk LOKAL amba — WAJIB; SQLite di mount NAS menyebabkan segfault berulang).
+- **Auth:** RBAC multi-role aktif (admin/user/guest). Semua endpoint kecuali `GET /api/health` & `POST /api/auth/login` wajib Bearer token. Seed default: `admin/admin123`.
+
+### Kroombox (Browser E2E / UI Automation)
+- **SSH alias:** `kroombox2` (HostName `sshpcserver.kolab.top`, user `kroombox`) — key-based.
+- **Gunakan untuk:** semua kebutuhan Playwright/automation UI. Setup siap pakai: `~/kp-e2e` (playwright + chromium headless).
+- **DILARANG KERAS** menjalankan browser/playwright di NAS (berat; cache sudah di-uninstall).
 
 ---
 
@@ -42,6 +49,13 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
   - Out: `/home/amba/.pm2/logs/kroomprint-api-out.log`
   - Error: `/home/amba/.pm2/logs/kroomprint-api-error.log`
 - Saat me-rebuild backend Go, selalu pastikan menggunakan flag `-buildvcs=false` jika dijalankan dalam folder yang sedang dimount dari jaringan (NAS) untuk menghindari error VCS status.
+4. **Locale Wajib di PM2 (LANG):** Proses spawn PM2 **tanpa LANG** membuat filter chain CUPS menghasilkan `Sent 0 bytes` secara SILENT sementara CUPS melaporkan job sukses (~50% gagal "acak").
+   - **Solusi:** `ecosystem.config.cjs` memuat `LANG/LANGUAGE/LC_ALL` + belt-and-suspenders inject env di `dispatchPrintJob`. **Dilarang hapus** saat cleanup env.
+5. **PDF Flatten Pipeline:** Semua PDF ≤32MB otomatis dirasterize (`ensurePrintablePDF`: IM convert → gs render PNG 300dpi tanpa-AA → level boost) sebelum spool, karena invoice producer membawa `/Rotate` float & crop-box rusak yang membuat pdftopdf crash/halaman kosong. Jangan tambahkan `-dTextAlphaBits` (membuat teks hilang) dan jangan kembalikan pass-through vector.
+6. **Status Job = IPP Authoritative:** Status sukses/gagal dibaca via `GetJobStateIPP` (discovery/jobstate.go), bukan kehadiran di `lpstat -W completed` (daftar itu mencampur aborted). Fake-timer completion telah DIHAPUS — jangan dihidupkan ulang.
+7. **RBAC:** Role enum `admin|user|guest`; matriks izin lengkap ada di `docs/PRINTING_PIPELINE.md` dan kode `Handler()`. Guest read-only; user boleh cetak; admin penuh + manajemen users.
+
+> 📚 **Dokumentasi mendalam pipeline cetak, kronologi debugging 5-lapis, dan troubleshooting:** [`docs/PRINTING_PIPELINE.md`](docs/PRINTING_PIPELINE.md)
 
 ---
 
@@ -51,8 +65,10 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
 - **Perintah Diagnostik Berguna di Amba:**
   - `lpstat -p` (Status printer)
   - `lpstat -o` (Status antrian / jobs)
-  - `lpstat -W completed` (Riwayat jobs selesai)
+  - `lpstat -W completed` (Riwayat jobs selesai — **ingat: mencampur aborted, bukan bukti sukses**)
   - `echo kolab777 | sudo -S tail -n 50 /var/log/cups/error_log` (Melihat aktivitas filter chain CUPS: `pdftopdf`, `ghostscript`, `epson-escpr-wrapper`, `usb`)
+  - **Metrik penentu keberhasilan fisik:** `grep "Sent [0-9]+ bytes"` untuk job terkait — `Sent 0 bytes` = gagal senyap meski CUPS bilang completed.
+  - Status job authoritative: fungsi `GetJobStateIPP` (discovery/jobstate.go) — lihat `docs/PRINTING_PIPELINE.md` §2 Lapis 3.
 
 ---
 

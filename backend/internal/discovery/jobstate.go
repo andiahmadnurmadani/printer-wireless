@@ -64,9 +64,22 @@ func ippBuildGetJobAttributes(printerURI string, jobID int) []byte {
 	writeIppAttr(&b, 0x45, "printer-uri", printerURI)
 	writeIppAttr(&b, 0x42, "requesting-user-name", "kroomprint")
 	writeIppInt(&b, 0x21, "job-id", int32(jobID))
-	writeIppAttr(&b, 0x44, "requested-attributes", "job-state,job-state-reasons")
+	// cupsd answers Get-Job-Attributes with an empty attribute group when
+	// requested-attributes is sent as one comma-joined keyword value; RFC 8011
+	// additional-value framing (empty name) is accepted reliably.
+	writeIppAttr(&b, 0x44, "requested-attributes", "job-state")
+	appendIppAdditionalValue(&b, "job-state-reasons")
 	b.WriteByte(0x03) // end-of-attributes
 	return b.Bytes()
+}
+
+// appendIppAdditionalValue appends an additional value for the attribute
+// declared immediately before it (RFC 8011: name-length 0).
+func appendIppAdditionalValue(b *bytes.Buffer, val string) {
+	b.WriteByte(0x44)
+	writeIppUint16(b, 0)
+	writeIppUint16(b, uint16(len(val)))
+	b.WriteString(val)
 }
 
 // GetJobStateIPP queries the authoritative job-state of a CUPS job directly

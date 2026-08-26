@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1544,13 +1545,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// crash cups-filters pdftopdf) at upload time so preview, retry
 			// and dispatch all operate on the repaired file.
 			if req.FileType == "PDF" {
-				if bad, serr := pdfHasFloatRotate(dst); serr == nil && bad {
-					if fixed, ok := repairPDFWithGhostscript(dst, s.log); ok {
-						if rerr := os.Rename(fixed, dst); rerr == nil {
-							s.log.Printf("upload: normalized /Rotate metadata in %s", fname)
-						} else {
-							_ = os.Remove(fixed)
-						}
+				fixed := ensurePrintablePDF(dst, s.log)
+				if fixed != dst {
+					if rerr := os.Rename(fixed, dst); rerr == nil {
+						s.log.Printf("upload: normalized /Rotate metadata in %s", fname)
+					} else {
+						_ = os.Remove(fixed)
 					}
 				}
 			}
@@ -2125,13 +2125,34 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		return src
 	}
 
-	// 2) Handling PDF documents: re-distill through ghostscript pdfwrite so
-	// malformed producer metadata (non-integer /Rotate values like 270.000061)
-	// is normalized before cups-filters pdftopdf parses it. pdftopdf aborts on
-	// such files ("Unexpected /Rotate value") or emits mis-cropped pages — both
-	// ending with 0 bytes sent to the hardware while CUPS reports success.
-	if repaired, ok := repairPDFWithGhostscript(src, log); ok {
-		return repaired
+	// 2) Handling PDF documents: producer defects (non-integer /Rotate values
+	// like 270.000061) crash cups-filters pdftopdf ("Unexpected /Rotate value")
+	// or yield mis-cropped pages — both end with 0 bytes reaching hardware.
+	// ghostscript pdfwrite alone preserves such /Rotate verbatim, so after a
+	// re-distill the result is re-scanned and, if still defective, rebuilt from
+	// rendered page images (last resort, proven printable).
+	return ensurePrintablePDF(src, log)
+}
+
+// ensurePrintablePDF returns the best-effort printable variant of src:
+// untouched when healthy; re-distilled when a re-distill clears the defect;
+// image-rebuilt when even that fails. Falls back to src on any tool failure.
+func ensurePrintablePDF(src string, log *log.Logger) string {
+	bad, err := pdfHasFloatRotate(src)
+	if err != nil || !bad {
+		return src
+	}
+	if fixed, ok := repairPDFWithGhostscript(src, log); ok {
+		if stillBad, serr := pdfHasFloatRotate(fixed); serr == nil && !stillBad {
+			return fixed
+		}
+		_ = os.Remove(fixed)
+		if log != nil {
+			log.Printf("ensurePrintablePDF: re-distill kept float /Rotate for %s, falling back to rasterize", filepath.Base(src))
+		}
+	}
+	if ras, ok := rasterizePDFRepair(src, log); ok {
+		return ras
 	}
 	return src
 }
@@ -2195,6 +2216,68 @@ func repairPDFWithGhostscript(src string, log *log.Logger) (string, bool) {
 	}
 	if log != nil {
 		log.Printf("repairPDF: %s normalized (%d → %d bytes)", filepath.Base(src), fi.Size(), chk.Size())
+	}
+	return dst, true
+}
+
+// rasterizePDFRepair rebuilds a broken PDF by rendering each page to an image
+// and reassembling them into a fresh document. Last resort for producer
+// defects that pdfwrite preserves (e.g. non-integer /Rotate), trading vector
+// fidelity for guaranteed printability.
+func rasterizePDFRepair(src string, log *log.Logger) (string, bool) {
+	fi, err := os.Stat(src)
+	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
+		return "", false
+	}
+	gs, err := exec.LookPath("gs")
+	if err != nil {
+		return "", false
+	}
+	tmpDir, err := os.MkdirTemp(filepath.Dir(src), "kp-ras-*")
+	if err != nil {
+		return "", false
+	}
+	defer os.RemoveAll(tmpDir)
+
+	pngPattern := filepath.Join(tmpDir, "p-%02d.png")
+	if out, err := exec.Command(gs,
+		"-dSAFER", "-dNOPAUSE", "-dBATCH",
+		"-sDEVICE=png16m", "-r200",
+		"-dTextAlphaBits=4", "-dGraphicsAlphaBits=4",
+		"-sOutputFile="+pngPattern, src,
+	).CombinedOutput(); err != nil {
+		if log != nil {
+			log.Printf("rasterizeRepair: render failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+		}
+		return "", false
+	}
+	pages, err := filepath.Glob(filepath.Join(tmpDir, "p-*.png"))
+	if err != nil || len(pages) == 0 {
+		return "", false
+	}
+	sort.Strings(pages)
+
+	dst := strings.TrimSuffix(src, ".pdf") + ".ras.pdf"
+	args := append([]string{
+		"-dSAFER", "-dNOPAUSE", "-dBATCH", "-q",
+		"-sDEVICE=pdfwrite",
+		"-dAutoRotatePages=/None",
+		"-sOutputFile=" + dst,
+	}, pages...)
+	if out, err := exec.Command(gs, args...).CombinedOutput(); err != nil {
+		if log != nil {
+			log.Printf("rasterizeRepair: assemble failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
+		}
+		_ = os.Remove(dst)
+		return "", false
+	}
+	chk, err := os.Stat(dst)
+	if err != nil || chk.Size() == 0 {
+		_ = os.Remove(dst)
+		return "", false
+	}
+	if log != nil {
+		log.Printf("rasterizeRepair: %s rebuilt from %d rendered page(s) (%d bytes)", filepath.Base(src), len(pages), chk.Size())
 	}
 	return dst, true
 }

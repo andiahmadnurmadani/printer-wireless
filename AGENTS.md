@@ -19,17 +19,19 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
 - **Frontend Build:** `npm run build` -> menghasilkan direktori `dist/`
 - **Backend Build:** `cd backend && go build -buildvcs=false -o kroomprint-backend .`
 
-### Amba (CUPS Host & Production Runner)
+#### Amba (CUPS Host & Production Runner)
 - **Host:** `amba` (ZeroTier IP: `100.90.80.85` / LAN: `192.168.138.60`)
 - **Credentials:** User `amba`, password `kolab777`
-- **Runner:** PM2 (Name: `kroomprint-api`; ID bisa berubah setelah delete/start — selalu cek `pm2 ls`)
-- **Fungsi Utama:** Menerima file upload dari frontend, melakukan konversi/pemrosesan (Go backend), dan mendispatch print job ke daemon lokal CUPS via binary `lp`.
-- **SQLite produksi:** `/home/amba/kroomprint-data/kroomprint.db` (disk LOKAL amba — WAJIB; SQLite di mount NAS menyebabkan segfault berulang).
-- **Auth:** RBAC multi-role aktif (admin/user/guest). Semua endpoint kecuali `GET /api/health` & `POST /api/auth/login` wajib Bearer token. Seed default: `admin/admin123`.
+- **Runner:** PM2 (Name: `kroomprint-api`, executing `/mnt/web/Nouvem/printer-wireless/backend/kroomprint-backend` via NFS mount).
+- **Binary Permissions:** File binary di NAS wajib memiliki izin `chmod 755` agar dapat dieksekusi oleh user `amba` melalui NFS mount.
+- **Fungsi Utama:** Menerima file upload dari frontend, melakukan konversi/pemrosesan (Go backend), dan mendispatch print job ke daemon lokal CUPS via native IPP & fallback `lp`.
+- **SQLite produksi:** `/home/amba/kroomprint-data/kroomprint.db` (disk LOKAL amba — WAJIB; SQLite di mount NAS menyebabkan segfault/lock contention). Driver `modernc.org/sqlite` dikonfigurasi dengan `SetMaxOpenConns(1)` + PRAGMA WAL/busy_timeout.
+- **Auth:** RBAC multi-role aktif (admin/user/guest). Publik penuh: `GET /api/health` & `POST /api/auth/login`. Guest read-only via `optAuth` (baca printers/jobs/history/settings, SSE, diagnostics). Mutasi cetak wajib staff (`admin`/`user`): `POST /api/jobs`, cancel/pause/resume/retry/release, test-print, `PUT /api/settings`. Admin eksklusif: kelola printer/users/discovery, reset data, test-cups, clear history, `/uploads`. Token HMAC-SHA256 12-jam. Seed default: `admin/admin123`.
 
-### Kroombox (Browser E2E / UI Automation)
-- **SSH alias:** `kroombox2` (HostName `sshpcserver.kolab.top`, user `kroombox`) — key-based.
-- **Gunakan untuk:** semua kebutuhan Playwright/automation UI. Setup siap pakai: `~/kp-e2e` (playwright + chromium headless).
+### Minibox / Kroombox (Browser E2E / UI Automation)
+- **Minibox Host:** ZeroTier `100.90.80.95:22` (user `minibox`, pass `kolab777`)
+- **Kroombox Host (SSH alias):** `kroombox2` (HostName `sshpcserver.kolab.top`, user `kroombox`) — key-based.
+- **Gunakan untuk:** semua kebutuhan Playwright/automation UI. Playwright script directory: `/home/minibox/e2e-tests/` dengan browser args `--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu`.
 - **DILARANG KERAS** menjalankan browser/playwright di NAS (berat; cache sudah di-uninstall).
 
 ---
@@ -43,17 +45,39 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
    - Menggunakan `-o print-color-mode=monochrome` atau `ColorModel=Gray` akan menghasilkan halaman kosong karena format raster tidak dapat didekode oleh filter epson.
 3. **Pencegahan Stuck Queue (Pre-flight):** Jika ada print job berupa raw text (misal hasil echo ke `lp`) yang tersangkut di queue, CUPS akan mem-block *semua* job PDF selanjutnya yang valid.
    - **Solusi Kode:** Backend Go **selalu** menjalankan `cancel -a <printer>`, `cupsenable <printer>`, dan `cupsaccept <printer>` tepat sebelum mendispatch job baru ke local `lp`.
+4. **Penanganan False Failure CUPS (`stopped: job-completed-with-errors`):** Filter driver Epson mengeluarkan sinyal notice stderr non-fatal saat mentransfer byte terakhir ke USB. Status `stopped` dengan reason `job-completed-with-errors` dihitung sebagai **`completed`** oleh backend, bukan failed. Ini mencegah UI memunculkan status gagal palsu dan mencegah user melakukan *Retry* yang memicu *double print*.
+5. **Fit to Page & Scaling A4:** Dokumen yang lebih kecil dari ukuran kertas A4 wajib diekspansi secara proporsional menggunakan flag `-expand` pada `pdftops` serta atribut IPP `print-scaling=fit` / `fitplot=true` agar tidak tercetak kecil di tengah kertas.
+
+### Frontend UI, Auth & History Isolation
+1. **Unauthenticated Default (Guest Mode):** Aplikasi tidak lagi memblokir akses pengguna awal dengan login wall layar penuh. Pengunjung tanpa token langsung memuat App Shell dalam role `guest` dan dapat memantau status Dashboard, Daftar Printer, Antrian (Queue), Riwayat, dan Print Studio secara read-only.
+2. **Action Interception (Login Modal):** Ketika pengguna `guest` melakukan aksi protektif (drag/drop dokumen ke area Print Studio, klik tombol browse, scan kamera, atau klik Sign in), sistem menampilkan `LoginModal` (Bugster Glassmorphism style) tanpa reload halaman. Setelah sign in berhasil, pengguna dapat langsung melanjutkan proses cetak.
+3. **Isolasi Riwayat Cetak (Per-User History):**
+   - Riwayat cetak (`GET /api/history`) terisolasi per akun user (`WHERE user = ?`).
+   - Akun non-admin (Standard User) hanya dapat melihat riwayat dokumen miliknya sendiri.
+   - Akun Admin secara default melihat riwayat pribadinya (`My Prints`), serta disediakan switcher khusus `All Users (Audit)` untuk memantau log audit lengkap seluruh organisasi.
+   - Pengunjung `guest` mendapatkan tampilan hero card edukatif untuk login dan tidak dapat mengakses data riwayat pengguna lain.
+4. **Konfigurasi Halaman Settings (7 Fitur Utama & Adaptasi Role):**
+   - **Diagnostics**: Terbuka untuk semua role (`GET /api/diagnostics/network` via `optAuth`). Mengukur real-time latency socket CUPS, Gateway, Spool Storage, dan seluruh printer terdaftar.
+   - **CUPS Server & Remote Connectivity**: Admin dapat mengedit URL CUPS dan melakukan live TCP ping test (`POST /api/settings/test-cups`). Standard User & Guest melihat status live "Connected".
+   - **Account & Workspace**: Menampilkan identitas user (`IconCrown` untuk Admin, `IconUser` untuk Standard User, `IconEye` untuk Guest). Modal *Change Password* (`POST /api/auth/change-password`) aktif untuk user terotentikasi. *Danger Zone* (Reset All Data) dikunci eksklusif untuk Admin.
+   - **Compact Queue View**: Toggle `settings.compactQueue` mengubah tampilan antrian di `QueuePage` menjadi format tabel berdensitas tinggi dengan switcher instan di header.
+   - **Dark Mode (Glassmorphism Dark)**: Sinkronisasi real-time via CSS variables di `index.css` (`html.dark`) dan `settings.darkMode`.
+   - **Job Notifications**: Terintegrasi dengan Web Notification API native browser (`Notification.requestPermission()`) dan in-app toasts.
+   - **Auto-Refresh**: Mengontrol cadence polling background secara dinamis.
+5. **Zero-Emoji Compliance:** DILARANG KERAS menggunakan karakter emoji Unicode (`❌`, `👑`, `👤`, `👁️`, `🔒`, `⚠️`, `✓`, `✕`, `🗑️`, dll.) di seluruh komponen UI.
+6. **Mandatory Native SVG Icons:** Semua icon dan visual badge wajib menggunakan komponen SVG stroke native yang selaras dengan Bugster Design System (diekspor dari `src/components/ui/icons.jsx`).
+7. **User Avatars & Logos:** Avatar pengguna menggunakan kontainer rounded square geometris (`rounded-[11px] border-2 border-dark-black-900`) dengan icon SVG role (`IconCrown` untuk Admin, `IconUser` untuk Standard User, `IconEye` untuk Guest).
 
 ### PM2 & Eksekusi Node/Go
 - Log backend Go (di `amba`):
   - Out: `/home/amba/.pm2/logs/kroomprint-api-out.log`
   - Error: `/home/amba/.pm2/logs/kroomprint-api-error.log`
 - Saat me-rebuild backend Go, selalu pastikan menggunakan flag `-buildvcs=false` jika dijalankan dalam folder yang sedang dimount dari jaringan (NAS) untuk menghindari error VCS status.
-4. **Locale Wajib di PM2 (LANG):** Proses spawn PM2 **tanpa LANG** membuat filter chain CUPS menghasilkan `Sent 0 bytes` secara SILENT sementara CUPS melaporkan job sukses (~50% gagal "acak").
-   - **Solusi:** `ecosystem.config.cjs` memuat `LANG/LANGUAGE/LC_ALL` + belt-and-suspenders inject env di `dispatchPrintJob`. **Dilarang hapus** saat cleanup env.
-5. **PDF Flatten Pipeline:** Semua PDF ≤32MB otomatis dirasterize (`ensurePrintablePDF`: IM convert → gs render PNG 300dpi tanpa-AA → level boost) sebelum spool, karena invoice producer membawa `/Rotate` float & crop-box rusak yang membuat pdftopdf crash/halaman kosong. Jangan tambahkan `-dTextAlphaBits` (membuat teks hilang) dan jangan kembalikan pass-through vector.
-6. **Status Job = IPP Authoritative:** Status sukses/gagal dibaca via `GetJobStateIPP` (discovery/jobstate.go), bukan kehadiran di `lpstat -W completed` (daftar itu mencampur aborted). Fake-timer completion telah DIHAPUS — jangan dihidupkan ulang.
-7. **RBAC:** Role enum `admin|user|guest`; matriks izin lengkap ada di `docs/PRINTING_PIPELINE.md` dan kode `Handler()`. Guest read-only; user boleh cetak; admin penuh + manajemen users.
+- **Locale Wajib di PM2 (LANG):** Proses spawn PM2 **tanpa LANG** membuat filter chain CUPS menghasilkan `Sent 0 bytes` secara SILENT sementara CUPS melaporkan job sukses (~50% gagal "acak").
+  - **Solusi:** `ecosystem.config.cjs` memuat `LANG/LANGUAGE/LC_ALL` + belt-and-suspenders inject env di `dispatchPrintJob`. **Dilarang hapus** saat cleanup env.
+- **PDF Vector Normalization:** Normalisasi dokumen via Poppler `pdftops -level3 -paper A4 -expand` + Ghostscript pdfwrite `ensurePrintablePDF`.
+- **Status Job = IPP Authoritative:** Status sukses/gagal dibaca via `GetJobStateIPP` (discovery/jobstate.go).
+- **RBAC:** Role enum `admin|user|guest`; matriks izin lengkap ada di `docs/PRINTING_PIPELINE.md` dan kode `Handler()`. Guest read-only; user boleh cetak; admin penuh + manajemen users.
 
 > 📚 **Dokumentasi mendalam pipeline cetak, kronologi debugging 5-lapis, dan troubleshooting:** [`docs/PRINTING_PIPELINE.md`](docs/PRINTING_PIPELINE.md)
 

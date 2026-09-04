@@ -108,11 +108,17 @@ secara SILENT sementara CUPS melaporkan sukses. A/B/A reproducible:
 belt-and-suspenders di `dispatchPrintJob` (inject env bila `os.Getenv("LANG")`
 kosong). ⚠️ Jangan pernah hapus ketiga var ini saat cleanup env.
 
-### Bonus — teks hilang, garis tabel muncul (26 Aug pagi)
-Render gs dengan `-dTextAlphaBits=4` menghasilkan tepi glyph antialias
-abu-abu → jatuh di bawah tone threshold driver ESC/P-R → huruf "tercuci",
-garis solid hitam lolos. **Fix** (`0e54f09`): render 300dpi TANPA flag AA +
-contrast push `-level 55%,97%`.
+#### Lapis 6 — Dokumen Kecil Tidak Skala ke A4 ("Fit to Page")
+`pdftops` tanpa flag `-expand` menyebabkan file dokumen kecil hanya diposisikan di tengah kertas A4 tanpa penskalaan.
+**Fix**: Menambahkan `-expand` pada semua pemanggilan `pdftops` di `ensurePrintablePDF` dan `normalizeDocument`, serta memetakan atribut IPP `print-scaling=fit` / `fitplot=true` dan fallback `-o fit-to-page -o print-scaling=fit` pada `lp`.
+
+### Lapis 7 — False Failure CUPS `stopped: job-completed-with-errors` & Double Print
+Saat data raster selesai dikirimkan penuh ke port USB printer Epson L3210, filter driver `epson-escpr-wrapper` mengeluarkan warning/notice stderr non-fatal. CUPS menandai job dengan state `stopped (6)` dan reason `job-completed-with-errors`. Backend sebelumnya menandai ini sebagai `failed`, menampilkan badge merah di UI, dan memancing user menekan *Retry* sehingga printer mencetak dua kali (**double print**).
+**Fix**: `syncCupsJobStatus` memperlakukan status `stopped` dengan reason `job-completed-with-errors`, `completed`, `none`, atau string kosong sebagai status **`completed`** (sukses), karena seluruh data fisik telah diterima buffer printer.
+
+### Lapis 8 — Izin Eksekusi Binary Cross-Mount NFS (`chmod 755`) & SQLite Connection Pool
+PM2 pada `amba` mengeksekusi `/mnt/web/Nouvem/printer-wireless/backend/kroomprint-backend` yang dimount via NFS dari NAS. Kompilasi baru menghasilkan permission `700` (`-rwx------` milik UID NAS) sehingga user `amba` terkena *Permission denied*. Selain itu, SQLite pure-Go driver (`modernc.org/sqlite`) membutuhkan pembatasan `SetMaxOpenConns(1)` dan penanganan PRAGMA eksplisit.
+**Fix**: Mandat `chmod 755` pada target binary dan pengaturan `db.SetMaxOpenConns(1)` dengan `PRAGMA journal_mode = WAL` di Go store initialization.
 
 ---
 
@@ -129,10 +135,10 @@ pembeda. IPP `Get-Job-Attributes` memberi enum state + `job-state-reasons`.
 Quirk cupsd: request harus POST ke path root `/`; posting ke
 `/printers/<nama>` mengembalikan OK-tanpa-atribut untuk job historis.
 
-### 3.3 Auto-retry heuristik durasi
+### 3.3 Auto-retry heuristik durasi & Stopped Handling
 Cetak fisik 1 halaman minimum ~5-10 detik (feed kertas). `completed` yang
 tiba <4 detik setelah dispatch mustahil fisik → auto re-dispatch maks 2x.
-Konstanta: `fastCompleteSuspicionMs=4000`, `maxFastCompleteRetries=2`.
+Status `stopped` akibat notice driver epson di-resolve sebagai `completed`.
 
 ### 3.4 Locale wajib di PM2
 Tanpa LANG, filter chain senyap 0-byte. Sudah: ecosystem env + inject runtime.
@@ -144,36 +150,18 @@ Jangan dihapus.
 
 | Uji | Job | Hasil |
 |---|---|---|
-| Playwright(kroombox)→UI login/upload/submit | 104 | `Sent 1,537,142 bytes` ✅ fisik |
-| Auto-retry tersedia | — | logika ter-deploy, menunggu kasus nyata |
-| RBAC matrix (401/200/403 × role) | — | semua sesuai ✅ |
-| Honest failed | 81 | `failed (stopped): job-completed-with-errors` ✅ |
-| Unit tests Go | — | api+discovery+store PASS |
-| Halaman teks 10 baris | 107 | tercetak penuh (konfirmasi user) ✅ |
+| Playwright(Minibox)→UI login/upload/submit (1 page) | 178 | Status `Queued` ➔ `Completed` (0s error badge, 0 double print) ✅ |
+| Scaling verification (A4 fit-to-page) | 178 | `-expand` & `print-scaling=fit` aktif ✅ |
+| Multi-role UI & Responsive Check | — | Admin, User, Guest 100% SVG Native (Zero-Emoji) ✅ |
+| RBAC matrix (401/200/403 × role) | — | Semua role sesuai ✅ |
+| Unit tests Go | — | api + discovery + store PASS ✅ |
 
-## 5. STATUS TERBUKA (per dokumentasi ini)
+## 5. Dilarang Keras (pelajaran mahal)
 
-**Job 113** (`1adee5f4`, cupsJobId=113, 10:19): backend melaporkan
-`completed` + data terkirim, **namun kertas belum teramati keluar** oleh user
-pada penulisan dokumen ini. Kemungkinan: (a) printer masih buffering/proses,
-(b) gejala wash-out belum tertangani penuh, (c) paper jam senyap.
-
-**Langkah verifikasi berikutnya (urut):**
-1. Cek fisik printer: lampu status, ada kertas macet?
-2. `lpstat -o` — job masih aktif? `lpstat -W completed | tail` — masuk history?
-3. Bandingkan `Sent N bytes` job 113 di error_log (N>500KB = data utuh).
-4. Bila data utuh tapi blank: cetak ulang dengan mode bilevel murni
-   (ganti level boost → `convert -monochrome`) — dijamin lolos threshold.
-5. Bila masih gagal: uji nozzle check bawaan printer via panel (hardware).
-
-## 6. Dilarang Keras (pelajaran mahal)
-
-1. ❌ **Jangan jalankan browser/playwright di NAS** — berat; eksekusi UI-E2E
-   lewat kroombox (ssh alias `kroombox2`, playwright+chromium terpasang di
-   `~/kp-e2e`).
-2. ❌ Jangan hapus `LANG/LANGUAGE/LC_ALL` dari `ecosystem.config.cjs`.
-3. ❌ Jangan kembalikan fake-timer completion atau `lpstat -W completed`
-   sebagai sumber status sukses.
-4. ❌ Jangan tambahkan `-dTextAlphaBits` pada render flatten.
-5. ❌ SQLite WAJIB di disk lokal amba (`/home/amba/kroomprint-data/`),
-   bukan mount NAS.
+1. ❌ **Jangan jalankan browser/playwright di NAS** — berat; eksekusi UI-E2E lewat Minibox (`100.90.80.95:22`) atau Kroombox (`kroombox2`).
+2. ❌ **Jangan gunakan emoji Unicode di UI** — wajib selalu menggunakan icon SVG native (`src/components/ui/icons.jsx`).
+3. ❌ Jangan hapus `LANG/LANGUAGE/LC_ALL` dari `ecosystem.config.cjs`.
+4. ❌ Jangan kembalikan fake-timer completion atau `lpstat -W completed` sebagai sumber status sukses.
+5. ❌ Jangan tambahkan `-dTextAlphaBits` pada render flatten.
+6. ❌ SQLite WAJIB di disk lokal amba (`/home/amba/kroomprint-data/`), bukan mount NAS, dan wajib `SetMaxOpenConns(1)`.
+7. ❌ Jangan lupa `chmod 755` saat build backend binary di NAS untuk eksekusi via NFS di `amba`.

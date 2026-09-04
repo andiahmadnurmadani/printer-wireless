@@ -107,7 +107,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-[13px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-500 transition-all font-figtree font-bold text-[15px] text-dark-black-900 cursor-pointer disabled:opacity-60"
+              className="mt-2 inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-[13px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-500 transition-all font-figtree font-bold text-[15px] text-dark-black-900 cursor-pointer disabled:opacity-60 shadow-[3px_3px_0_0_rgba(56,56,56,1)]"
             >
               {loading ? (
                 <>
@@ -122,8 +122,8 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-6 flex items-center justify-center gap-2 font-figtree text-[13px] text-dark-black-900/60">
-            <IconWifi size={14} className="text-dark-black-900/40" />
+          <div className="mt-6 flex items-center justify-center gap-2 font-figtree text-[12.5px] text-dark-black-900/60 text-center">
+            <IconWifi size={14} className="text-dark-black-900/40 shrink-0" />
             Devices on your network appear automatically after sign-in.
           </div>
         </div>

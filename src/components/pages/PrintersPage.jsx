@@ -670,8 +670,8 @@ export default function PrintersPage() {
                 ].map((s) => (
                   <div key={s.label} className="p-2.5 rounded-[10px] border border-dark-black-900/15 bg-vanilla-200 flex flex-col gap-0.5">
                     <span className="font-figtree text-[11px] text-dark-black-900/50 uppercase font-medium">{s.label}</span>
-                    <span className={`font-figtree font-bold text-[12px] ${s.ok ? 'text-ok-500' : 'text-err-500'}`}>
-                      {s.ok ? `✓ ${s.okText}` : `⚠ ${s.errText}`}
+                    <span className={`inline-flex items-center gap-1 font-figtree font-bold text-[12px] ${s.ok ? 'text-ok-500' : 'text-err-500'}`}>
+                      {s.ok ? <><IconCheck size={13} strokeWidth={2.4} /> {s.okText}</> : <><IconAlert size={13} /> {s.errText}</>}
                     </span>
                   </div>
                 ))}

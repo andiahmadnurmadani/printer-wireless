@@ -6,14 +6,14 @@ import Modal from '../ui/Modal'
 import { FileTypeBadge } from '../ui/Badges'
 import {
   IconPrinter, IconPlay, IconPause, IconTrash, IconDrag, IconQueue, IconAlert,
-  IconChevronDown, IconChevronUp, IconEye, IconRefresh, IconCopy,
+  IconChevronDown, IconChevronUp, IconEye, IconRefresh, IconCopy, IconLock,
 } from '../ui/icons'
 
 const statusMeta = {
   printing: { label: 'Printing', cls: 'bg-lime-300 text-dark-black-900 border-dark-black-900' },
   queued: { label: 'Queued', cls: 'bg-sky-blue-100 text-dark-black-900 border-dark-black-900' },
   paused: { label: 'Paused', cls: 'bg-warn-100 text-warn-500 border-dark-black-900' },
-  'held-secure': { label: '🔒 Held (PIN Required)', cls: 'bg-amber-300 text-dark-black-900 border-dark-black-900 font-bold animate-pulse' },
+  'held-secure': { label: 'Held (PIN Required)', cls: 'bg-amber-300 text-dark-black-900 border-dark-black-900 font-bold animate-pulse' },
   completed: { label: 'Completed', cls: 'bg-ok-100 text-ok-500 border-dark-black-900' },
   failed: { label: 'Failed', cls: 'bg-err-100 text-err-500 border-err-500' },
   cancelled: { label: 'Cancelled', cls: 'bg-surface-gray-300 text-dark-gray-600 border-dark-black-900' },
@@ -70,9 +70,33 @@ export default function QueuePage() {
             {activeJobs.length} active job{activeJobs.length !== 1 ? 's' : ''} — drag to reorder, adjust priority, or manage each job.
           </p>
         </div>
-        {doneJobs.length > 0 && (
-          <Button variant="vanilla" onClick={clearQueue} icon={<IconTrash size={16} />}>Clear finished</Button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* View mode switcher */}
+          <div className="flex items-center p-1 bg-vanilla-200 border-2 border-dark-black-900 rounded-[12px] shadow-xs">
+            <button
+              onClick={() => app.setSettings({ ...app.settings, compactQueue: false })}
+              className={`px-3 py-1.5 rounded-[8px] font-figtree text-[12.5px] font-semibold transition-all cursor-pointer ${
+                !app.settings.compactQueue ? 'bg-lime-300 text-dark-black-900 shadow-xs' : 'text-dark-black-900/60 hover:text-dark-black-900'
+              }`}
+            >
+              Standard View
+            </button>
+            <button
+              onClick={() => app.setSettings({ ...app.settings, compactQueue: true })}
+              className={`px-3 py-1.5 rounded-[8px] font-figtree text-[12.5px] font-semibold transition-all cursor-pointer ${
+                app.settings.compactQueue ? 'bg-lime-300 text-dark-black-900 shadow-xs' : 'text-dark-black-900/60 hover:text-dark-black-900'
+              }`}
+            >
+              Compact View
+            </button>
+          </div>
+
+          <Only roles={['admin', 'user']}>
+            {doneJobs.length > 0 && (
+              <Button variant="vanilla" onClick={clearQueue} icon={<IconTrash size={16} />}>Clear finished</Button>
+            )}
+          </Only>
+        </div>
       </div>
 
       {activeJobs.length === 0 ? (
@@ -83,7 +107,142 @@ export default function QueuePage() {
           <div className="font-figtree font-medium text-dark-black-900 text-[15px]">Queue is empty</div>
           <div className="font-figtree font-light text-dark-black-900/50 text-[13px] mt-1">All jobs have been processed — nice work!</div>
         </div>
+      ) : app.settings.compactQueue ? (
+        /* ── Compact Queue View (Table / High-density) ── */
+        <div className="bg-vanilla-200 border-2 border-dark-black-900 rounded-[18px] overflow-hidden">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b-2 border-dark-black-900 bg-vanilla-100">
+                <th className="w-10 px-3 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide">#</th>
+                <th className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide">Document</th>
+                <th className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide">Printer</th>
+                <th className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide">Pages</th>
+                <th className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide">Priority</th>
+                <th className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide">Status / Progress</th>
+                <th className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-dark-black-900/10">
+              {displayed.map((job) => {
+                const meta = statusMeta[job.status]
+                const printer = printers.find((p) => p.id === job.printerId)
+                return (
+                  <tr
+                    key={job.id}
+                    draggable
+                    onDragStart={() => setDraggingId(job.id)}
+                    onDragOver={(e) => { e.preventDefault(); setOverId(job.id) }}
+                    onDragLeave={() => setOverId(null)}
+                    onDrop={() => onDrop(job.id)}
+                    className={`transition-colors ${
+                      overId === job.id ? 'bg-sky-blue-100/60' : 'hover:bg-lime-300/20'
+                    } ${draggingId === job.id ? 'opacity-40' : ''}`}
+                  >
+                    <td className="px-3 py-3 text-center cursor-grab active:cursor-grabbing text-dark-black-900/30">
+                      <IconDrag size={16} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileTypeBadge type={job.fileType} />
+                        <span className="font-figtree font-semibold text-[13.5px] text-dark-black-900 truncate max-w-[220px]">{job.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5 font-figtree text-[13px] text-dark-black-900/80">
+                        <IconPrinter size={13} className="text-dark-black-900/50" /> {printerOf(job.printerId)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-geist text-[12.5px] text-dark-black-900/70">
+                      {job.pages} p · {job.copies}x
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1">
+                        <Only roles={['admin', 'user']}>
+                          <button
+                            onClick={() => setJobPriority(job.id, Math.max(1, (job.priority || 3) - 1))}
+                            className="w-5 h-5 rounded-[4px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
+                          >
+                            <IconChevronDown size={11} />
+                          </button>
+                        </Only>
+                        <span className={`min-w-[28px] h-[22px] px-1 rounded-[6px] border border-dark-black-900 flex items-center justify-center text-[10.5px] font-bold font-geist ${priorityMeta[job.priority]?.cls || 'bg-vanilla-300'}`}>
+                          {priorityMeta[job.priority]?.label || 'Normal'}
+                        </span>
+                        <Only roles={['admin', 'user']}>
+                          <button
+                            onClick={() => setJobPriority(job.id, Math.min(5, (job.priority || 3) + 1))}
+                            className="w-5 h-5 rounded-[4px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
+                          >
+                            <IconChevronUp size={11} />
+                          </button>
+                        </Only>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10.5px] font-semibold font-figtree ${meta.cls}`}>
+                          {meta.label}
+                        </span>
+                        {job.status === 'printing' && (
+                          <div className="w-20 h-1.5 rounded-full bg-dark-black-900/10 overflow-hidden border border-dark-black-900/20">
+                            <div className="h-full bg-lime-400 progress-stripes" style={{ width: `${job.progress}%` }} />
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1 justify-end">
+                        <button
+                          onClick={() => setDetail(job)}
+                          className="w-7 h-7 rounded-[7px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 flex items-center justify-center cursor-pointer"
+                          title="Details"
+                        >
+                          <IconEye size={13} />
+                        </button>
+                        {job.status === 'held-secure' && (
+                          <Only roles={['admin', 'user']}>
+                            <button
+                              onClick={() => { setReleaseJob(job); setEnteredPin('') }}
+                              className="px-2 h-7 rounded-[7px] border border-dark-black-900 bg-amber-300 hover:bg-amber-400 font-figtree text-[11px] font-bold cursor-pointer"
+                            >
+                              PIN
+                            </button>
+                          </Only>
+                        )}
+                        <Only roles={['admin', 'user']}>
+                          {job.status === 'paused' ? (
+                            <button
+                              onClick={() => resumeJob(job.id)}
+                              className="px-2 h-7 rounded-[7px] border border-dark-black-900 bg-lime-300 hover:bg-lime-500 font-figtree text-[11px] font-semibold cursor-pointer"
+                            >
+                              Resume
+                            </button>
+                          ) : job.status === 'printing' || job.status === 'queued' ? (
+                            <button
+                              onClick={() => cancelJob(job.id)}
+                              className="px-2 h-7 rounded-[7px] border border-err-500 bg-err-100 hover:bg-err-500 hover:text-white font-figtree text-[11px] font-semibold text-err-500 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => purgeJob(job.id)}
+                              className="px-2 h-7 rounded-[7px] border border-dark-black-900/30 bg-vanilla-100 hover:bg-err-100 text-err-500 font-figtree text-[11px] font-semibold cursor-pointer"
+                            >
+                              Purge
+                            </button>
+                          )}
+                        </Only>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       ) : (
+        /* ── Standard Card View ── */
         <div className="flex flex-col gap-3">
           {displayed.map((job) => {
             const meta = statusMeta[job.status]
@@ -140,8 +299,9 @@ export default function QueuePage() {
                       <span className="font-geist text-[11.5px]">{job.size}</span>
                     </div>
                     {job.error && (
-                      <div className="mt-1.5 text-[12px] font-figtree font-medium text-err-600 bg-err-100/80 border border-err-500/40 rounded-[6px] px-2 py-0.5 inline-block">
-                        ⚠️ {job.error}
+                      <div className="mt-1.5 text-[12px] font-figtree font-medium text-err-600 bg-err-100/80 border border-err-500/40 rounded-[6px] px-2 py-0.5 inline-flex items-center gap-1.5">
+                        <IconAlert size={13} className="shrink-0" />
+                        <span>{job.error}</span>
                       </div>
                     )}
                   </div>
@@ -203,7 +363,8 @@ export default function QueuePage() {
                           }}
                           className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-[10px] border-2 border-dark-black-900 bg-amber-300 hover:bg-amber-400 font-figtree text-[12.5px] font-bold text-dark-black-900 cursor-pointer shadow-xs"
                         >
-                          🔒 Release PIN
+                          <IconLock size={14} />
+                          <span>Release PIN</span>
                         </button>
                       </Only>
                     )}
@@ -317,8 +478,9 @@ export default function QueuePage() {
         }
       >
         <div className="flex flex-col gap-4">
-          <div className="p-3 bg-amber-100 border-2 border-dark-black-900 rounded-[12px] text-[13px] font-figtree text-dark-black-900">
-            🔒 Dokumen ini dikunci dengan Secure PIN. Masukkan 4-digit PIN yang Anda tentukan saat mengirim dokumen.
+          <div className="p-3.5 bg-amber-100 border-2 border-dark-black-900 rounded-[12px] text-[13px] font-figtree text-dark-black-900 flex items-start gap-2.5">
+            <IconLock size={18} className="text-dark-black-900 shrink-0 mt-0.5" />
+            <span>Dokumen ini dikunci dengan Secure PIN. Masukkan 4-digit PIN yang Anda tentukan saat mengirim dokumen.</span>
           </div>
           <div>
             <label className="font-figtree text-[13px] font-bold text-dark-black-900 block mb-1">

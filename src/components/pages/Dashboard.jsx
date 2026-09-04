@@ -1,7 +1,11 @@
 import { useMemo } from 'react'
 import { useApp } from '../../context/AppContext'
+import { useAuth } from '../../context/AuthContext'
 import StatusBadge from '../ui/Badges'
-import { IconPrinter, IconQueue, IconClock, IconCheckCircle, IconWifi, IconUsb, IconStar, IconRefresh, IconPlay, IconPause } from '../ui/icons'
+import {
+  IconPrinter, IconQueue, IconClock, IconCheckCircle, IconWifi,
+  IconUsb, IconStar, IconRefresh, IconPlay, IconPause, IconEye,
+} from '../ui/icons'
 
 function StatCard({ icon, label, value, sub, accent = 'lime' }) {
   const accents = {
@@ -28,6 +32,8 @@ function StatCard({ icon, label, value, sub, accent = 'lime' }) {
 
 export default function Dashboard({ onNavigate }) {
   const { printers, jobs, history, refreshAll, defaultPrinter, activeCount, queueCount } = useApp()
+  const { user, has, isAuthenticated, openLoginModal } = useAuth()
+  const canPrint = has('admin', 'user')
 
   const stats = useMemo(() => {
     const printing = jobs.filter((j) => j.status === 'printing')
@@ -37,6 +43,29 @@ export default function Dashboard({ onNavigate }) {
 
   return (
     <div className="flex flex-col gap-7">
+      {/* Guest Mode Notification */}
+      {!canPrint && (
+        <div className="relative bg-vanilla-300/80 border-2 border-dark-black-900 rounded-[18px] p-4.5 flex items-center justify-between gap-4 flex-wrap shadow-sm">
+          <div className="flex items-center gap-3">
+            <span className="w-10 h-10 rounded-[11px] bg-vanilla-100 border-2 border-dark-black-900 flex items-center justify-center text-dark-black-900 shrink-0 shadow-xs">
+              <IconEye size={20} />
+            </span>
+            <div>
+              <div className="font-figtree font-bold text-[14.5px] text-dark-black-900">Guest Mode (Read-Only)</div>
+              <div className="font-figtree font-light text-dark-black-900/70 text-[13px]">
+                You have monitoring permissions to view printers and queue status. Sign in to submit and track your personal print jobs.
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => openLoginModal('Sign in to submit and track your print jobs.')}
+            className="px-4 py-2 rounded-[10px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree text-[13px] font-bold text-dark-black-900 transition-colors cursor-pointer shadow-xs"
+          >
+            Sign In
+          </button>
+        </div>
+      )}
+
       {/* Header row */}
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
@@ -46,16 +75,25 @@ export default function Dashboard({ onNavigate }) {
           </div>
           <h1 className="font-figtree font-semibold text-[36px] leading-tight text-dark-black-900">Dashboard</h1>
           <p className="font-figtree font-light text-dark-black-900/60 text-[15px] mt-0.5">
-            Welcome back, Andi. Here&apos;s what&apos;s happening with your printers.
+            Welcome back, <span className="font-semibold text-dark-black-900">{user?.username || 'User'}</span> ({user?.role || 'Guest'}). Here&apos;s what&apos;s happening with your printers.
           </p>
         </div>
         <div className="flex gap-2.5 items-center flex-wrap">
-          <button
-            onClick={() => onNavigate('print')}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
-          >
-            <IconPrinter size={16} /> Print & Scan Studio
-          </button>
+          {canPrint ? (
+            <button
+              onClick={() => onNavigate('print')}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer active:translate-x-[1px] active:translate-y-[1px]"
+            >
+              <IconPrinter size={16} /> Print &amp; Scan Studio
+            </button>
+          ) : (
+            <button
+              onClick={() => onNavigate('printers')}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-sky-blue-100 hover:bg-sky-blue-300 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
+            >
+              <IconPrinter size={16} /> View Printers
+            </button>
+          )}
           <button
             onClick={refreshAll}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-all font-figtree font-semibold text-[13.5px] text-dark-black-900 cursor-pointer"

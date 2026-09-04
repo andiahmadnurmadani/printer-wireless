@@ -7,7 +7,7 @@ import Modal from '../ui/Modal'
 import { FileTypeBadge } from '../ui/Badges'
 import {
   IconUpload, IconFile, IconImage, IconTxt, IconCheck, IconPrinter,
-  IconChevronDown, IconEye, IconRefresh, IconAlert, IconWrench, IconDroplet, IconCamera,
+  IconChevronDown, IconEye, IconRefresh, IconAlert, IconWrench, IconDroplet, IconCamera, IconLock,
 } from '../ui/icons'
 import { getPaperDimensions, PAPER_SIZES } from '../../utils/paperDimensions'
 import { loadPdfDocument } from '../../utils/pdfHelper'
@@ -86,7 +86,7 @@ function Toggle({ label, desc, hint, checked, onChange, disabled }) {
 }
 
 export default function PrintPage({ onNavigate }) {
-  const { isStaff } = useAuth()
+  const { isStaff, isAuthenticated, openLoginModal } = useAuth()
   const { printers, submitJob, defaultPrinter, toast } = useApp()
   const fileInputRef = useRef(null)
 
@@ -263,6 +263,10 @@ export default function PrintPage({ onNavigate }) {
 
   const onFileDrop = (e) => {
     e.preventDefault()
+    if (!isAuthenticated) {
+      openLoginModal('Please sign in to upload and print documents.')
+      return
+    }
     const f = e.dataTransfer?.files?.[0] || e.target?.files?.[0]
     if (!f) return
     const ext = f.name.split('.').pop()?.toUpperCase()
@@ -431,17 +435,47 @@ export default function PrintPage({ onNavigate }) {
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Left Column: Dropzone & Interactive Print Sheet Simulation (7 cols) */}
         <div className="xl:col-span-7 flex flex-col gap-5">
-          {!isStaff && (
-            <div className="p-3.5 rounded-[12px] border-2 border-dark-black-900/30 bg-vanilla-100 font-figtree text-[13px] text-dark-black-900/70">
-              You are signed in as <b>Guest</b> — viewing is allowed, printing is disabled.
+          {!isAuthenticated && (
+            <div className="p-4 rounded-[16px] border-2 border-dark-black-900 bg-lime-300/40 flex items-center justify-between gap-4 shadow-sm flex-wrap">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-[11px] bg-vanilla-100 border border-dark-black-900 flex items-center justify-center shrink-0 text-dark-black-900">
+                  <IconEye size={20} />
+                </div>
+                <div className="min-w-0 leading-tight">
+                  <div className="font-figtree font-bold text-[14.5px] text-dark-black-900">
+                    You are in Guest Preview Mode
+                  </div>
+                  <div className="font-figtree text-[12.5px] text-dark-black-900/70 mt-0.5">
+                    Sign in to upload documents, configure print settings, and send jobs.
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => openLoginModal('Sign in to start printing with KroomPrint.')}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-[11px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13px] text-dark-black-900 shadow-xs cursor-pointer transition-all"
+              >
+                Sign in to Print
+              </button>
             </div>
           )}
           {!file ? (
             /* Upload Dropzone */
             <div
-              onDragOver={(e) => e.preventDefault()}
+              onDragOver={(e) => {
+                e.preventDefault()
+                if (!isAuthenticated) {
+                  openLoginModal('Please sign in to upload and print documents.')
+                }
+              }}
               onDrop={onFileDrop}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (!isAuthenticated) {
+                  openLoginModal('Please sign in to upload and print documents.')
+                  return
+                }
+                fileInputRef.current?.click()
+              }}
               className="relative border-2 border-dashed border-dark-black-900/60 rounded-[20px] p-10 flex flex-col items-center justify-center text-center cursor-pointer bg-vanilla-100 hover:bg-lime-300/30 transition-all duration-200 min-h-[360px]"
             >
               <input ref={fileInputRef} type="file" className="hidden" onChange={onFileDrop} />
@@ -464,6 +498,10 @@ export default function PrintPage({ onNavigate }) {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation()
+                    if (!isAuthenticated) {
+                      openLoginModal('Please sign in to scan and print documents.')
+                      return
+                    }
                     setCameraModalOpen(true)
                   }}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
@@ -1004,7 +1042,10 @@ export default function PrintPage({ onNavigate }) {
               </div>
               {secureRelease && (
                 <div className="flex justify-between items-center text-[12px] font-figtree text-dark-black-900 bg-warn-100 px-2 py-1 rounded-[6px] border border-warn-500/40">
-                  <span className="font-bold">🔒 Secure Release:</span>
+                  <span className="inline-flex items-center gap-1 font-bold">
+                    <IconLock size={12} />
+                    <span>Secure Release:</span>
+                  </span>
                   <span>PIN {pin ? `**** (${pin})` : 'Required'}</span>
                 </div>
               )}
@@ -1098,7 +1139,7 @@ export default function PrintPage({ onNavigate }) {
             </div>
           ) : (
             <Button variant="dark" onClick={() => { setManualDuplexModalOpen(false); if (onNavigate) onNavigate('queue'); }}>
-              Lihat Antrean Cetak ✓
+              Lihat Antrean Cetak
             </Button>
           )
         }
@@ -1159,8 +1200,8 @@ export default function PrintPage({ onNavigate }) {
             </>
           ) : (
             <div className="p-6 rounded-[16px] border-2 border-dark-black-900 bg-lime-300/40 text-center flex flex-col items-center gap-2">
-              <span className="w-12 h-12 rounded-full bg-dark-black-900 text-lime-300 flex items-center justify-center text-2xl font-bold">
-                ✓
+              <span className="w-12 h-12 rounded-full bg-dark-black-900 text-lime-300 flex items-center justify-center">
+                <IconCheck size={24} strokeWidth={2.6} />
               </span>
               <h3 className="font-figtree font-bold text-[17px] text-dark-black-900">
                 Pencetakan Bolak-Balik Selesai!

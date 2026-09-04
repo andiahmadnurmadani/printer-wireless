@@ -28,8 +28,17 @@
 
   --font-figtree: "Figtree", "Figtree Fallback", sans-serif;
   --font-geist: "Geist Mono", "Geist Mono Fallback", monospace;
-
   --radius-4xl: 2rem;
+}
+
+html.dark {
+  --color-vanilla-100: #242424;
+  --color-vanilla-200: #181818;
+  --color-vanilla-300: #303030;
+  --color-dark-black-900: #f5f2ee;
+  --color-surface-gray-100: #282828;
+  --color-surface-gray-300: #3a3a3a;
+  --color-dark-gray-600: #b3aea9;
 }
 
 html, body, #root {
@@ -50,6 +59,11 @@ body {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1962' height='1273'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='2 2' numOctaves='3' stitchTiles='stitch' seed='1949'/%3E%3CfeColorMatrix type='luminanceToAlpha'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='discrete' tableValues='1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeFlood flood-color='rgba(0,0,0,0.12)'/%3E%3CfeComposite operator='in' in2='coloredNoise'/%3E%3C/filter%3E%3Crect width='1962' height='1273' fill='%23F6F2EE'/%3E%3Crect width='1962' height='1273' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: cover;
   background-position: center;
+}
+
+html.dark .bg-kroom-noise {
+  background-color: #181818;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1962' height='1273'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='2 2' numOctaves='3' stitchTiles='stitch' seed='1949'/%3E%3CfeColorMatrix type='luminanceToAlpha'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='discrete' tableValues='1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/%3E%3C/feComponentTransfer%3E%3CfeFlood flood-color='rgba(255,255,255,0.06)'/%3E%3CfeComposite operator='in' in2='coloredNoise'/%3E%3C/filter%3E%3Crect width='1962' height='1273' fill='%23181818'/%3E%3Crect width='1962' height='1273' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 /* ---- Decorative animated squares ---- */

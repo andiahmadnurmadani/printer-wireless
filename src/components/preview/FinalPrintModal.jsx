@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react'
 import Button from '../ui/Button'
 import { renderPdfPageToCanvas } from '../../utils/pdfHelper'
 import {
-  IconPrinter, IconUpload, IconEye, IconRefresh,
+  IconPrinter, IconUpload, IconEye, IconRefresh, IconX,
 } from '../ui/icons'
 
 /**
@@ -190,8 +190,9 @@ export default function FinalPrintModal({
             <button
               onClick={onClose}
               className="w-9 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-200 hover:bg-err-100 flex items-center justify-center text-dark-black-900 font-bold text-[16px] transition-colors cursor-pointer"
+              aria-label="Close"
             >
-              ✕
+              <IconX size={16} />
             </button>
           </div>
         </div>

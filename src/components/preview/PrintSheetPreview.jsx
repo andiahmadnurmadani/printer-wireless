@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { renderPdfPageToCanvas } from '../../utils/pdfHelper'
-import { IconEye, IconRefresh } from '../ui/icons'
+import { IconEye, IconRefresh, IconRuler, IconSearch, IconFile, IconDroplet, IconCheck } from '../ui/icons'
 
 /**
  * High-fidelity interactive print sheet preview component.
@@ -302,9 +302,9 @@ export default function PrintSheetPreview({
                         key={idx}
                         className="w-full h-full border border-dark-black-900/30 rounded-[2px] bg-vanilla-100 p-1 flex flex-col justify-between overflow-hidden shadow-xs"
                       >
-                        <div className="flex justify-between font-geist text-[6px] text-dark-black-900/50">
+                        <div className="flex justify-between items-center font-geist text-[6px] text-dark-black-900/50">
                           <span>P.{subPage}</span>
-                          <span>{subPage <= totalPages ? '✓' : '—'}</span>
+                          <span>{subPage <= totalPages ? <IconCheck size={7} strokeWidth={3} className="text-ok-500" /> : '—'}</span>
                         </div>
                         <div className="w-full h-full flex flex-col gap-0.5 my-auto justify-center px-1">
                           <div className="w-2/3 h-1 bg-dark-black-900/40 rounded-[1px]" />
@@ -369,28 +369,33 @@ export default function PrintSheetPreview({
 
         {/* Dynamic Parameter Feedback Indicator under Paper */}
         <div className="mt-4 flex items-center justify-center gap-2.5 text-[11.5px] font-geist text-dark-black-900/75 flex-wrap text-center">
-          <span className="bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
-            📐 <span className="font-bold text-dark-black-900">{paperDim.label}</span>
+          <span className="inline-flex items-center gap-1 bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
+            <IconRuler size={13} className="text-dark-black-900/60" />
+            <span className="font-bold text-dark-black-900">{paperDim.label}</span>
           </span>
-          <span className="bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
-            🔍 <span className="font-bold text-dark-black-900">{scalingStyles.label}</span>
+          <span className="inline-flex items-center gap-1 bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
+            <IconSearch size={13} className="text-dark-black-900/60" />
+            <span className="font-bold text-dark-black-900">{scalingStyles.label}</span>
           </span>
-          <span className="bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
-            🎨 <span className={`font-bold ${color ? 'text-ok-500' : 'text-dark-black-900'}`}>{color ? 'Full Color' : 'Grayscale'}</span>
+          <span className="inline-flex items-center gap-1 bg-vanilla-100 border border-dark-black-900/20 px-2.5 py-1 rounded-[6px]">
+            <IconDroplet size={13} className="text-dark-black-900/60" />
+            <span className={`font-bold ${color ? 'text-ok-500' : 'text-dark-black-900'}`}>{color ? 'Full Color' : 'Grayscale'}</span>
           </span>
           {nUp > 1 && (
-            <span className="bg-lime-300 border border-dark-black-900/40 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
-              📑 {nUp}-Up Grid
+            <span className="inline-flex items-center gap-1 bg-lime-300 border border-dark-black-900/40 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
+              <IconFile size={13} />
+              <span>{nUp}-Up Grid</span>
             </span>
           )}
           {watermark && (
-            <span className="bg-watermelon-500/20 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
-              🏷️ Stamp: "{watermark}"
+            <span className="inline-flex items-center gap-1 bg-watermelon-500/20 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
+              <span>Stamp: "{watermark}"</span>
             </span>
           )}
           {mediaType && mediaType !== 'Plain Paper' && (
-            <span className="bg-sky-blue-100 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
-              📄 {mediaType}
+            <span className="inline-flex items-center gap-1 bg-sky-blue-100 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
+              <IconFile size={13} />
+              <span>{mediaType}</span>
             </span>
           )}
         </div>

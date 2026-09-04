@@ -1,16 +1,25 @@
 import { useMemo, useState } from 'react'
 import { useApp } from '../context/AppContext'
-import { IconSearch, IconWifi, IconChevronDown, IconLogout, IconPrinter } from './ui/icons'
+import { useAuth } from '../context/AuthContext'
+import {
+  IconSearch, IconWifi, IconChevronDown, IconLogout, IconPrinter,
+  IconCrown, IconUser, IconEye, IconGear, IconUsers,
+} from './ui/icons'
 
 /**
  * Top bar — search, connection status, user menu.
  */
 export default function TopBar({ onNavigate, onLogout, onMenu, user }) {
   const { printers, activeCount, jobs } = useApp()
+  const { isAuthenticated, openLoginModal } = useAuth()
   const [userOpen, setUserOpen] = useState(false)
   const [q, setQ] = useState('')
 
   const printingCount = useMemo(() => jobs.filter((j) => j.status === 'printing').length, [jobs])
+
+  const RoleIcon = user?.role === 'admin' ? IconCrown : user?.role === 'user' ? IconUser : IconEye
+  const roleBg = user?.role === 'admin' ? 'bg-lime-300' : user?.role === 'user' ? 'bg-sky-blue-100' : 'bg-vanilla-300'
+  const roleLabel = user?.role === 'admin' ? 'Admin' : user?.role === 'user' ? 'User' : 'Guest'
 
   const results = useMemo(() => {
     if (!q.trim()) return []
@@ -75,63 +84,100 @@ export default function TopBar({ onNavigate, onLogout, onMenu, user }) {
 
       {/* Status pills */}
       <div className="hidden md:flex items-center gap-2">
-        <span className="inline-flex items-center gap-2 px-3.5 py-2 rounded-[11px] border-2 border-dark-black-900 bg-vanilla-100 font-figtree text-[12.5px] font-medium text-dark-black-900">
+        <span className="inline-flex items-center gap-2 px-3.5 py-2 rounded-[11px] border-2 border-dark-black-900 bg-vanilla-100 font-figtree text-[12.5px] font-medium text-dark-black-900 shadow-sm">
           <span className="w-2 h-2 rounded-full bg-ok-500 animate-pulse" />
           {activeCount}/{printers.length} online
         </span>
         {printingCount > 0 && (
-          <span className="inline-flex items-center gap-2 px-3.5 py-2 rounded-[11px] border-2 border-dark-black-900 bg-lime-300 font-figtree text-[12.5px] font-medium text-dark-black-900">
+          <span className="inline-flex items-center gap-2 px-3.5 py-2 rounded-[11px] border-2 border-dark-black-900 bg-lime-300 font-figtree text-[12.5px] font-medium text-dark-black-900 shadow-sm">
             <IconWifi size={14} className="text-dark-black-900/60" />
             {printingCount} printing
           </span>
         )}
       </div>
 
-      {/* User menu */}
-      <div className="relative">
-        <button
-          onClick={() => setUserOpen(!userOpen)}
-          className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors cursor-pointer"
-        >
-          <div className="w-9 h-9 rounded-[10px] bg-lime-300 border border-dark-black-900 flex items-center justify-center font-bold text-[12.5px] text-dark-black-900">
-            {(user?.username || '?').slice(0, 2).toUpperCase()}
-          </div>
-          <span className="hidden sm:block text-left leading-tight">
-            <span className="block font-figtree font-semibold text-[13px] text-dark-black-900">{user?.username || 'User'}</span>
-            <span className="block font-geist text-[10px] text-dark-black-900/50 uppercase tracking-wide">{user?.role || ''}</span>
-          </span>
-          <IconChevronDown size={15} className="text-dark-black-900/60" />
-        </button>
-
-        {userOpen && (
-          <>
-            <div className="fixed inset-0 z-40" onClick={() => setUserOpen(false)} />
-            <div className="absolute right-0 top-full mt-2 w-[230px] bg-vanilla-100 border-2 border-dark-black-900 rounded-[14px] shadow-xl overflow-hidden z-50 modal-in">
-              <div className="px-4 py-3.5 border-b border-dark-black-900/10">
-                <div className="font-figtree font-semibold text-[14px] text-dark-black-900">{user?.username || 'User'}</div>
-                <div className="font-figtree font-light text-dark-black-900/50 text-[12px] capitalize">{user?.role || ''} account</div>
-              </div>
-              <div className="p-2 flex flex-col">
-                <button
-                  onClick={() => { setUserOpen(false); onNavigate('settings') }}
-                  className="w-full text-left px-3 py-2.5 rounded-[10px] hover:bg-vanilla-300/70 font-figtree text-[13.5px] font-medium text-dark-black-900 cursor-pointer"
-                >
-                  Settings
-                </button>
-                <button
-                  onClick={() => { setUserOpen(false); onLogout() }}
-                  className="w-full text-left px-3 py-2.5 rounded-[10px] hover:bg-err-100 font-figtree text-[13.5px] font-medium text-err-500 cursor-pointer"
-                >
-                  Sign out
-                </button>
-              </div>
-              <div className="px-4 py-2.5 border-t border-dark-black-900/10 font-geist text-[10.5px] text-dark-black-900/40 uppercase tracking-widest flex items-center gap-1.5">
-                <IconLogout size={12} /> KroomPrint Pro
-              </div>
+      {/* User menu / Guest Sign In button */}
+      {isAuthenticated ? (
+        <div className="relative">
+          <button
+            onClick={() => setUserOpen(!userOpen)}
+            className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors cursor-pointer shadow-sm"
+          >
+            <div
+              className={`w-9 h-9 rounded-[10px] border-2 border-dark-black-900 flex items-center justify-center text-dark-black-900 ${roleBg}`}
+            >
+              <RoleIcon size={18} />
             </div>
-          </>
-        )}
-      </div>
+            <span className="hidden sm:block text-left leading-tight">
+              <span className="block font-figtree font-bold text-[13px] text-dark-black-900">{user?.username || 'User'}</span>
+              <span className="flex items-center gap-1 font-geist text-[10.5px] text-dark-black-900/60 uppercase tracking-wide">
+                <RoleIcon size={10} />
+                <span>{roleLabel}</span>
+              </span>
+            </span>
+            <IconChevronDown size={15} className="text-dark-black-900/60" />
+          </button>
+
+          {userOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setUserOpen(false)} />
+              <div className="absolute right-0 top-full mt-2 w-[240px] bg-vanilla-100 border-2 border-dark-black-900 rounded-[16px] shadow-2xl overflow-hidden z-50 modal-in">
+                <div className="px-4 py-3.5 border-b-2 border-dark-black-900 bg-vanilla-200">
+                  <div className="font-figtree font-bold text-[14px] text-dark-black-900">{user?.username || 'User'}</div>
+                  <div className="font-geist text-[11px] text-dark-black-900/60 capitalize mt-0.5 flex items-center gap-1.5">
+                    <RoleIcon size={12} />
+                    <span>Role: <b>{user?.role || 'Guest'}</b></span>
+                  </div>
+                </div>
+                <div className="p-2 flex flex-col gap-1">
+                  <button
+                    onClick={() => { setUserOpen(false); onNavigate('settings') }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-[10px] hover:bg-vanilla-300 font-figtree text-[13.5px] font-medium text-dark-black-900 cursor-pointer"
+                  >
+                    <IconGear size={15} />
+                    <span>Settings &amp; Diagnostics</span>
+                  </button>
+                  {user?.role === 'admin' && (
+                    <button
+                      onClick={() => { setUserOpen(false); onNavigate('users') }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-[10px] hover:bg-lime-300 font-figtree text-[13.5px] font-medium text-dark-black-900 cursor-pointer"
+                    >
+                      <IconUsers size={15} />
+                      <span>Manage Users</span>
+                    </button>
+                  )}
+                  <div className="my-1 border-t border-dark-black-900/10" />
+                  <button
+                    onClick={() => { setUserOpen(false); onLogout() }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-[10px] hover:bg-err-100 font-figtree text-[13.5px] font-semibold text-err-500 cursor-pointer"
+                  >
+                    <IconLogout size={15} />
+                    <span>Sign out</span>
+                  </button>
+                </div>
+                <div className="px-4 py-2 border-t-2 border-dark-black-900 bg-vanilla-200 font-geist text-[10px] text-dark-black-900/40 uppercase tracking-widest flex items-center justify-between">
+                  <span>KroomPrint</span>
+                  <span>v1.0.0</span>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-[11px] border-2 border-dark-black-900/30 bg-vanilla-100 font-figtree text-[12px] text-dark-black-900/70">
+            <IconEye size={14} className="text-dark-black-900/50" />
+            Guest mode
+          </span>
+          <button
+            onClick={() => openLoginModal('Sign in to access wireless printing.')}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[2px_2px_0_0_rgba(56,56,56,1)] cursor-pointer transition-all active:translate-x-0.5 active:translate-y-0.5"
+          >
+            <IconUser size={15} />
+            <span>Sign in</span>
+          </button>
+        </div>
+      )}
     </header>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { IconX } from './icons'
 
 /**
  * Modal with the Bugster design language:
@@ -43,7 +44,7 @@ export default function Modal({ open, onClose, title, subtitle, children, footer
                 className="w-9 h-9 shrink-0 rounded-[10px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 transition-colors flex items-center justify-center text-dark-black-900 font-semibold cursor-pointer"
                 aria-label="Close"
               >
-                ✕
+                <IconX size={16} />
               </button>
             )}
           </div>

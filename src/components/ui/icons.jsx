@@ -277,3 +277,65 @@ export const IconRotate = ({ size = 18, className = '' }) => (
   </svg>
 )
 
+export const IconKey = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="m21 3-9.5 9.5M15.5 7.5 18 10M18 5l2.5 2.5" />
+  </svg>
+)
+
+export const IconUser = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <circle cx="12" cy="7" r="4" />
+    <path d="M5.5 21a8.38 8.38 0 0 1 13 0" />
+  </svg>
+)
+
+export const IconUsers = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+)
+
+export const IconCrown = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14" />
+  </svg>
+)
+
+export const IconShield = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+  </svg>
+)
+
+export const IconLock = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+)
+
+export const IconX = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} strokeWidth={2.2} className={className} aria-hidden="true">
+    <path d="M18 6 6 18M6 6l12 12" />
+  </svg>
+)
+
+export const IconRuler = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M21.3 8.7 8.7 21.3a1 1 0 0 1-1.4 0l-4.6-4.6a1 1 0 0 1 0-1.4L15.3 2.7a1 1 0 0 1 1.4 0l4.6 4.6a1 1 0 0 1 0 1.4z" />
+    <path d="m14.5 4.5-2 2M11.5 7.5-10 10M8.5 10.5-6 13M5.5 13.5-4 15" />
+  </svg>
+)
+
+export const IconInfo = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 16v-4M12 8h.01" />
+  </svg>
+)
+

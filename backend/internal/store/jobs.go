@@ -244,11 +244,17 @@ type HistoryRecord struct {
 	Department  string `json:"department,omitempty"`
 }
 
-func (s *Store) ListHistory(limit int) ([]HistoryRecord, error) {
+func (s *Store) ListHistory(limit int, user string) ([]HistoryRecord, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.Query("SELECT id, name, file_type, pages, copies, printer_name, status, created_at, duration, error, cost, user, department FROM history ORDER BY created_at DESC LIMIT ?", limit)
+	var rows *sql.Rows
+	var err error
+	if user != "" {
+		rows, err = s.db.Query("SELECT id, name, file_type, pages, copies, printer_name, status, created_at, duration, error, cost, user, department FROM history WHERE user = ? ORDER BY created_at DESC LIMIT ?", user, limit)
+	} else {
+		rows, err = s.db.Query("SELECT id, name, file_type, pages, copies, printer_name, status, created_at, duration, error, cost, user, department FROM history ORDER BY created_at DESC LIMIT ?", limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -257,16 +263,16 @@ func (s *Store) ListHistory(limit int) ([]HistoryRecord, error) {
 	for rows.Next() {
 		var h HistoryRecord
 		var pages, copies, cost int
-		var user, dept sql.NullString
-		if err := rows.Scan(&h.ID, &h.Name, &h.FileType, &pages, &copies, &h.PrinterName, &h.Status, &h.CreatedAt, &h.Duration, &h.Error, &cost, &user, &dept); err != nil {
+		var u, dept sql.NullString
+		if err := rows.Scan(&h.ID, &h.Name, &h.FileType, &pages, &copies, &h.PrinterName, &h.Status, &h.CreatedAt, &h.Duration, &h.Error, &cost, &u, &dept); err != nil {
 			return nil, err
 		}
 		h.Pages = pages
 		h.Copies = copies
 		h.Cost = cost
-		h.User = user.String
+		h.User = u.String
 		if h.User == "" {
-			h.User = "Andi Ahmad"
+			h.User = "admin"
 		}
 		h.Department = dept.String
 		if h.Department == "" {

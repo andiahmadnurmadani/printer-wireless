@@ -21,15 +21,48 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
-	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	// SQLite is single-connection friendly; setting to 1 eliminates busy lock contention.
 	db.SetMaxOpenConns(1)
+	// Fail fast when a PRAGMA cannot be applied: silently running without WAL
+	// (or without busy_timeout) re-opens the door to lock contention and to
+	// unrecoverable mmap faults (SIGBUS) on stale WAL files (see 2026-09-04).
+	pragma := func(stmt string) error {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("pragma %q: %w", stmt, err)
+		}
+		return nil
+	}
+	if err := pragma("PRAGMA journal_mode = WAL;"); err != nil {
+		return nil, err
+	}
+	if err := pragma("PRAGMA busy_timeout = 5000;"); err != nil {
+		return nil, err
+	}
+	if err := pragma("PRAGMA foreign_keys = ON;"); err != nil {
+		return nil, err
+	}
+	if err := pragma("PRAGMA synchronous = NORMAL;"); err != nil {
+		return nil, err
+	}
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	// Consolidate any WAL left behind by an unclean shutdown (a stale
+	// -wal/-shm from a crashed process faulted the driver on 2026-08-26)
+	// and refuse to serve traffic when the database image itself is corrupt.
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE);"); err != nil {
+		return nil, fmt.Errorf("wal checkpoint: %w", err)
+	}
+	var integrity string
+	if err := db.QueryRow("PRAGMA integrity_check;").Scan(&integrity); err != nil {
+		return nil, fmt.Errorf("integrity check: %w", err)
+	}
+	if integrity != "ok" {
+		return nil, fmt.Errorf("integrity check failed: %s", integrity)
 	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -25,6 +26,7 @@ type JobOptions struct {
 	Copies       int
 	ColorMode    string // color | monochrome
 	Quality      string // draft | normal | high
+	Scaling      string // "Fit to page" | "Actual size" | "Fill page" | "Shrink to fit"
 	JobName      string
 	FileType     string // application/pdf, image/png, text/plain, ...
 	PageRange    string // e.g. "1", "1-5", "1,3,5-7" (empty = all pages)
@@ -173,8 +175,8 @@ func ProbeIPPPrinterLocalHostTest(connHost, printerName string, timeout time.Dur
 	return ippToCaps(resp), nil
 }
 
-// SubmitPrintJob sends a real print job to a CUPS/IPP printer via IPP
-// Print-Job (0x0002) over HTTP POST. Returns the CUPS job id.
+// SubmitPrintJob sends a real print job to a CUPS/IPP printer via native IPP
+// Print-Job (0x0002) over HTTP POST. Returns the authoritative CUPS job id.
 func SubmitPrintJob(host, printerName, filePath string, opts JobOptions) (int, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -187,7 +189,16 @@ func SubmitPrintJob(host, printerName, filePath string, opts JobOptions) (int, e
 	uri := "ipp://" + host + "/printers/" + url.PathEscape(printerName)
 	jobName := opts.JobName
 	if jobName == "" {
-		jobName = "kroomprint-job"
+		jobName = filepath.Base(filePath)
+	}
+
+	docFormat := opts.FileType
+	if docFormat == "" {
+		if strings.EqualFold(filepath.Ext(filePath), ".pdf") {
+			docFormat = "application/pdf"
+		} else {
+			docFormat = "application/octet-stream"
+		}
 	}
 
 	attrs := map[string]string{}
@@ -199,32 +210,94 @@ func SubmitPrintJob(host, printerName, filePath string, opts JobOptions) (int, e
 	}
 	if opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" {
 		attrs["print-color-mode"] = "monochrome"
-	} else if opts.ColorMode == "color" {
+		attrs["Ink"] = "MONO"
+	} else {
 		attrs["print-color-mode"] = "color"
+		attrs["Ink"] = "COLOR"
 	}
 	if opts.Quality != "" {
 		attrs["print-quality"] = qualityToIPP(opts.Quality)
 	}
+	if opts.Scaling != "" {
+		switch strings.ToLower(opts.Scaling) {
+		case "fit to page", "fit":
+			attrs["print-scaling"] = "fit"
+			attrs["fitplot"] = "true"
+		case "fill", "fill page":
+			attrs["print-scaling"] = "fill"
+		case "shrink to fit":
+			attrs["print-scaling"] = "auto-fit"
+		case "actual size":
+			attrs["print-scaling"] = "none"
+		default:
+			attrs["print-scaling"] = "auto"
+		}
+	} else {
+		attrs["print-scaling"] = "fit"
+		attrs["fitplot"] = "true"
+	}
+	if opts.MediaType != "" {
+		attrs["MediaType"] = opts.MediaType
+	}
 
-	resp, err := ippHTTP(host, "/printers/"+url.PathEscape(printerName), uri, 0x0002, attrs, opts.Copies, jobName, data)
+	body := ippBuildPrintJob(uri, docFormat, jobName, attrs, opts.Copies)
+	body = append(body, data...)
+
+	resp, err := ippPostBytes(host, "/printers/"+url.PathEscape(printerName), body, 30*time.Second)
 	if err != nil {
 		return 0, err
 	}
+	if resp.Status >= 0x0400 {
+		return 0, fmt.Errorf("CUPS IPP error 0x%04X", resp.Status)
+	}
+
 	jobID := 0
 	if ids := resp.Attributes["job-id"]; len(ids) > 0 {
-		fmt.Sscanf(ids[0], "%d", &jobID)
+		if len(ids[0]) == 4 {
+			jobID = int(binary.BigEndian.Uint32([]byte(ids[0])))
+		} else {
+			fmt.Sscanf(ids[0], "%d", &jobID)
+		}
 	}
 	return jobID, nil
 }
 
-// BuildIPPDebug exports ippBuild for cmd/ipptest.
-func BuildIPPDebug(operation uint16, uri string, jobAttrs map[string]string, copies int, jobName string) []byte {
-	return ippBuild(operation, uri, jobAttrs, copies, jobName)
-}
-
 // ── IPP binary helpers ──
 
-// ippBuild builds a minimal IPP request: header + operation attrs + job attrs.
+func ippBuildPrintJob(uri, docFormat, jobName string, jobAttrs map[string]string, copies int) []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0x01, 0x01}) // IPP/1.1
+	binary.Write(&b, binary.BigEndian, uint16(0x0002)) // Print-Job
+	binary.Write(&b, binary.BigEndian, uint32(1))      // request-id
+
+	// Operation attributes group (tag 0x01)
+	b.WriteByte(0x01)
+	writeIppAttr(&b, 0x47, "attributes-charset", "utf-8")
+	writeIppAttr(&b, 0x48, "attributes-natural-language", "en")
+	writeIppAttr(&b, 0x45, "printer-uri", uri)
+	if jobName != "" {
+		writeIppAttr(&b, 0x42, "job-name", jobName)
+	}
+	writeIppAttr(&b, 0x42, "requesting-user-name", "kroomprint")
+	if docFormat != "" {
+		writeIppAttr(&b, 0x49, "document-format", docFormat)
+	}
+
+	// Job attributes group (tag 0x02)
+	if len(jobAttrs) > 0 || copies > 0 {
+		b.WriteByte(0x02)
+		for k, v := range jobAttrs {
+			writeIppAttr(&b, 0x44, k, v)
+		}
+		if copies > 0 {
+			writeIppInt(&b, 0x21, "copies", int32(copies))
+		}
+	}
+	b.WriteByte(0x03) // end-of-attributes
+	return b.Bytes()
+}
+
+// ippBuild builds a minimal generic IPP request.
 func ippBuild(operation uint16, uri string, jobAttrs map[string]string, copies int, jobName string) []byte {
 	var b bytes.Buffer
 	b.Write([]byte{0x01, 0x01}) // IPP/1.1
@@ -245,8 +318,6 @@ func ippBuild(operation uint16, uri string, jobAttrs map[string]string, copies i
 	if len(jobAttrs) > 0 || copies > 0 {
 		b.WriteByte(0x02)
 		for k, v := range jobAttrs {
-			// keywords and name values use tag 0x44 (keyword) — but media,
-			// sides, print-quality, print-color-mode are keyword values.
 			writeIppAttr(&b, 0x44, k, v)
 		}
 		if copies > 0 {

@@ -131,6 +131,20 @@ func (s *Server) authorize(roles []string, next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) optionalAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := bearerToken(r)
+		if tok != "" {
+			if sec, err := s.authSecret(); err == nil {
+				if c, err := verifyToken(sec, tok); err == nil {
+					r = r.WithContext(context.WithValue(r.Context(), claimsKey, c))
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) claimsFromCtx(r *http.Request) (claims, bool) {
 	c, ok := r.Context().Value(claimsKey).(claims)
 	return c, ok

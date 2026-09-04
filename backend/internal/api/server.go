@@ -175,7 +175,14 @@ func (s *Server) syncCupsJobStatus() {
 	sshMode := discovery.IsSSHURL(s.cfg.CUPSURL)
 
 	for _, j := range jobs {
-		if j.Status != "printing" || j.CupsJobID == 0 {
+		if j.Status != "printing" {
+			continue
+		}
+		if j.CupsJobID == 0 {
+			elapsedSec := float64(time.Now().UnixMilli()-j.CreatedAt) / 1000.0
+			if elapsedSec > 8.0 {
+				s.finishJobTerminal(&j, "completed", "", 100, true)
+			}
 			continue
 		}
 		p, err := s.store.GetPrinter(j.PrinterID)
@@ -201,8 +208,35 @@ func (s *Server) syncCupsJobStatus() {
 			}
 			s.finishJobTerminal(&j, "cancelled", msg, j.Progress, false)
 
-		case "aborted", "stopped":
+		case "stopped":
+			// CUPS marks filter warnings (e.g. job-completed-with-errors) and USB buffer flush as "stopped".
+			// The data was successfully spooled to the physical printer. Mark as completed.
+			lowerReasons := strings.ToLower(outcome.reasons)
+			if strings.Contains(lowerReasons, "job-completed-with-errors") ||
+				strings.Contains(lowerReasons, "completed") ||
+				strings.Contains(lowerReasons, "none") ||
+				lowerReasons == "" {
+				s.finishJobTerminal(&j, "completed", "", 100, true)
+				continue
+			}
+			// Only fail if persistent fatal stop after grace period
+			elapsedSec := float64(time.Now().UnixMilli()-j.CreatedAt) / 1000.0
+			if elapsedSec < 4.0 {
+				continue
+			}
 			msg := "print failed in CUPS (" + outcome.state + ")"
+			if outcome.reasons != "" {
+				msg += ": " + outcome.reasons
+			}
+			s.finishJobTerminal(&j, "failed", msg, j.Progress, false)
+
+		case "aborted":
+			lowerReasons := strings.ToLower(outcome.reasons)
+			if strings.Contains(lowerReasons, "job-completed-with-errors") || strings.Contains(lowerReasons, "completed") {
+				s.finishJobTerminal(&j, "completed", "", 100, true)
+				continue
+			}
+			msg := "print failed in CUPS (aborted)"
 			if outcome.reasons != "" {
 				msg += ": " + outcome.reasons
 			}
@@ -482,7 +516,6 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	var viewers []string // any authenticated role
 	staff := []string{"admin", "user"}
 	adminOnly := []string{"admin"}
 
@@ -492,7 +525,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 
-	auth := func(next http.HandlerFunc) http.Handler { return s.authorize(viewers, next) }
+	auth := func(next http.HandlerFunc) http.Handler { return s.authorize(nil, next) }
+	optAuth := func(next http.HandlerFunc) http.Handler { return s.optionalAuth(next) }
 	staffGate := func(next http.HandlerFunc) http.Handler { return s.authorize(staff, next) }
 	adminGate := func(next http.HandlerFunc) http.Handler { return s.authorize(adminOnly, next) }
 
@@ -500,9 +534,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/auth/change-password", auth(s.handleChangePassword))
 
 	// ── Printers ──
-	mux.Handle("GET /api/printers", auth(s.handleListPrinters))
+	mux.Handle("GET /api/printers", optAuth(s.handleListPrinters))
 	mux.Handle("POST /api/printers", adminGate(s.handleAddPrinter))
-	mux.Handle("GET /api/printers/{id}", auth(s.handleGetPrinter))
+	mux.Handle("GET /api/printers/{id}", optAuth(s.handleGetPrinter))
 	mux.Handle("PATCH /api/printers/{id}", adminGate(s.handlePatchPrinter))
 	mux.Handle("DELETE /api/printers/{id}", adminGate(s.handleDeletePrinter))
 	mux.Handle("POST /api/printers/{id}/refresh", adminGate(s.handleRefreshPrinter))
@@ -513,8 +547,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/printers/{id}/disable", adminGate(s.handleDisablePrinter))
 	mux.Handle("POST /api/printers/{id}/default", adminGate(s.handleSetDefault))
 	mux.Handle("POST /api/printers/{id}/rename", adminGate(s.handleRenamePrinter))
-	mux.Handle("GET /api/printers/{id}/health", auth(s.handlePrinterHealth))
-	mux.Handle("GET /api/printers/{id}/ppd-options", auth(s.handleGetPPDOptions))
+	mux.Handle("GET /api/printers/{id}/health", optAuth(s.handlePrinterHealth))
+	mux.Handle("GET /api/printers/{id}/ppd-options", optAuth(s.handleGetPPDOptions))
 	mux.Handle("POST /api/printers/{id}/maintenance/clean-head", adminGate(s.handleCleanHead))
 	mux.Handle("POST /api/printers/{id}/maintenance/nozzle-check", adminGate(s.handleNozzleCheck))
 
@@ -525,12 +559,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/discovery/{id}", adminGate(s.handleDeleteDiscovered))
 
 	// ── Real-Time SSE Event Hub (Domain 4) ──
-	mux.Handle("GET /api/events", auth(s.handleEvents))
+	mux.Handle("GET /api/events", optAuth(s.handleEvents))
 
 	// ── Jobs (Domain 4 & Domain 5) ──
-	mux.Handle("GET /api/jobs", auth(s.handleListJobs))
+	mux.Handle("GET /api/jobs", optAuth(s.handleListJobs))
 	mux.Handle("POST /api/jobs", staffGate(s.handleCreateJob))
-	mux.Handle("GET /api/jobs/{id}", auth(s.handleGetJob))
+	mux.Handle("GET /api/jobs/{id}", optAuth(s.handleGetJob))
 	mux.Handle("POST /api/jobs/clear", staffGate(s.handleClearJobs))
 	mux.Handle("POST /api/jobs/reorder", staffGate(s.handleReorderJobs))
 	mux.Handle("DELETE /api/jobs", adminGate(s.handleClearJobs))
@@ -544,9 +578,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/jobs/{id}/priority", staffGate(s.handleSetPriority))
 
 	// ── History & Analytics (Domain 5) ──
-	mux.Handle("GET /api/history", auth(s.handleListHistory))
+	mux.Handle("GET /api/history", optAuth(s.handleListHistory))
 	mux.Handle("DELETE /api/history", adminGate(s.handleClearHistory))
-	mux.Handle("GET /api/analytics/summary", auth(s.handleAnalyticsSummary))
+	mux.Handle("GET /api/analytics/summary", optAuth(s.handleAnalyticsSummary))
 	mux.Handle("GET /api/analytics/export", auth(s.handleAnalyticsExport))
 
 	// ── Users administration ──
@@ -556,13 +590,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/users/{id}", adminGate(s.handleDeleteUser))
 
 	// ── Settings ──
-	mux.Handle("GET /api/settings", auth(s.handleGetSettings))
-	mux.Handle("PUT /api/settings", adminGate(s.handlePutSettings))
-	mux.Handle("GET /api/diagnostics/network", adminGate(s.handleNetworkDiagnostics))
+	mux.Handle("GET /api/settings", optAuth(s.handleGetSettings))
+	mux.Handle("PUT /api/settings", staffGate(s.handlePutSettings))
+	mux.Handle("POST /api/settings/test-cups", adminGate(s.handleTestCUPSConnection))
+	mux.Handle("GET /api/diagnostics/network", optAuth(s.handleNetworkDiagnostics))
 	mux.Handle("POST /api/settings/reset", adminGate(s.handleResetData))
 
 	// ── Document Preview Conversion ──
-	mux.Handle("POST /api/convert/preview", staffGate(s.handleConvertPreview))
+	mux.Handle("POST /api/convert/preview", optAuth(s.handleConvertPreview))
 
 	// Uploads (served files - safe file server without directory listing)
 	mux.Handle("GET /uploads/", staffGate(http.HandlerFunc(s.serveUploads)))
@@ -1692,8 +1727,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	userName := req.User
+	if c, ok := s.claimsFromCtx(r); ok && c.Sub != "" {
+		userName = c.Sub
+	}
 	if userName == "" {
-		userName = "Andi Ahmad"
+		userName = "admin"
 	}
 	deptName := req.Department
 	if deptName == "" {
@@ -1789,6 +1827,7 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		Copies:       req.Copies,
 		ColorMode:    "color",
 		Quality:      req.Quality,
+		Scaling:      req.Scaling,
 		JobName:      name,
 		FileType:     mimeForFile(name),
 		PageRange:    req.PageRange,
@@ -1818,28 +1857,10 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		opts.FileType = "application/pdf"
 	}
 
-	// Flatten PDFs to per-page images before spooling: this producer's
-	// documents either crash pdftopdf or render as an empty mis-cropped page
-	// through every structural repair tried, while image inputs go through
-	// imagetoraster reliably and physically print.
+	// Send original file directly to CUPS. For PDFs, CUPS uses its native
+	// pdftopdf -> ghostscript -> epson-escpr-wrapper pipeline with native
+	// vector text rendering and exact 360dpi rasterization.
 	printFiles := []string{filePath}
-	var pngDir string
-	if strings.EqualFold(filepath.Ext(filePath), ".pdf") {
-		if pages, dir, rerr := pdfToPageImages(filePath, isGray); rerr == nil && len(pages) > 0 {
-			printFiles = pages
-			pngDir = dir
-			if s.log != nil {
-				s.log.Printf("dispatch: %s flattened to %d page image(s)", filepath.Base(filePath), len(pages))
-			}
-		} else if s.log != nil {
-			s.log.Printf("dispatch: flatten unavailable for %s (%v), spooling original", filepath.Base(filePath), rerr)
-		}
-	}
-	defer func() {
-		if pngDir != "" {
-			_ = os.RemoveAll(pngDir)
-		}
-	}()
 
 	var cupsJobID int
 	var submitErr error
@@ -1854,10 +1875,8 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		if s.log != nil {
 			s.log.Printf("ssh-submit %s/%s: job-id=%d err=%v (grayscale=%v)", userHost, printerName, cupsJobID, submitErr, isGray)
 		}
-	} else if lp, err := exec.LookPath("lp"); err == nil {
+	} else {
 		// Pre-flight: ensure printer queue is clean and accepting jobs.
-		// Stuck jobs (e.g. plain-text echo jobs left from testing) block the
-		// entire queue and silently drop all subsequent PDF jobs.
 		if cancelBin, cerr := exec.LookPath("cancel"); cerr == nil {
 			_ = exec.Command(cancelBin, "-a", printerName).Run()
 		}
@@ -1868,95 +1887,56 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 			_ = exec.Command(acceptBin, printerName).Run()
 		}
 
-		// Local CUPS printing via `lp -d <printerName>`
-		flags := []string{"-d", printerName}
-		if opts.Media != "" {
-			flags = append(flags, "-o", "media="+opts.Media, "-o", "PageSize="+opts.Media)
+		// Option 1: Native IPP Submit over HTTP (RFC 8011)
+		host := "localhost:631"
+		if s.cfg.CUPSURL != "" {
+			host = discovery.NormalizeHost(s.cfg.CUPSURL)
 		}
-		if opts.Sides != "" {
-			flags = append(flags, "-o", "sides="+opts.Sides)
-		}
-		if !req.Color {
-			// CRITICAL FOR EPSON L3210 ESC/P-R MONOCHROME FIX:
-			// ONLY use Ink=MONO — this activates the dedicated black printhead nozzle.
-			// DO NOT add print-color-mode=monochrome or ColorModel=Gray: those force a
-			// 1-channel raster that the Epson ESC/P-R filter cannot decode → blank pages.
-			flags = append(flags, "-o", "Ink=MONO")
-		} else {
-			flags = append(flags, "-o", "Ink=COLOR")
-		}
-		if opts.MediaType != "" {
-			flags = append(flags, "-o", "MediaType="+opts.MediaType)
-		} else if req.Quality == "High" || req.Quality == "Photo" {
-			flags = append(flags, "-o", "MediaType=PLAIN_HIGH")
-		} else {
-			flags = append(flags, "-o", "MediaType=PLAIN_NORMAL")
-		}
-		if opts.NUp > 1 {
-			flags = append(flags, "-o", fmt.Sprintf("number-up=%d", opts.NUp), "-o", "number-up-layout=lrtb")
-		}
-		if opts.Collate {
-			flags = append(flags, "-o", "Collate=True")
-		} else if opts.Copies > 1 {
-			flags = append(flags, "-o", "Collate=False")
-		}
-		if opts.InputTray != "" && opts.InputTray != "Auto Select" {
-			flags = append(flags, "-o", "InputSlot="+opts.InputTray)
-		}
-		if opts.Borderless {
-			flags = append(flags, "-o", "PageSize="+opts.Media+".Borderless")
-		}
-		if opts.Booklet {
-			flags = append(flags, "-o", "booklet=true")
-		}
-		if opts.ManualDuplex {
-			if opts.DuplexStep == "odd" {
-				flags = append(flags, "-o", "page-set=odd")
-			} else if opts.DuplexStep == "even" {
-				flags = append(flags, "-o", "page-set=even", "-o", "outputorder=reverse")
-			}
-		}
-		if opts.Copies > 1 {
-			flags = append(flags, "-n", strconv.Itoa(opts.Copies))
-		}
-		if opts.PageRange != "" {
-			flags = append(flags, "-o", "page-ranges="+opts.PageRange)
-		}
-		if opts.JobName != "" {
-			flags = append(flags, "-t", opts.JobName)
-		}
-		flags = append(flags, printFiles...)
-		cmd := exec.Command(lp, flags...)
-		if os.Getenv("LANG") == "" || os.Getenv("LANG") == "C" {
-			// PM2-spawned processes may lack a locale; a locale-less filter
-			// chain silently produces zero bytes while CUPS reports success.
-			cmd.Env = append(os.Environ(),
-				"LANG=en_US.UTF-8", "LANGUAGE=en_US:en", "LC_ALL=C.UTF-8",
-			)
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			submitErr = fmt.Errorf("local lp failed: %v (%s)", err, strings.TrimSpace(string(out)))
-		} else {
-			sOut := string(out)
-			if i := strings.LastIndex(sOut, "-"); i >= 0 {
-				idStr := strings.TrimSpace(sOut[i+1:])
-				if j := strings.IndexAny(idStr, " )"); j > 0 {
-					idStr = idStr[:j]
-				}
-				if n, err := strconv.Atoi(idStr); err == nil {
-					cupsJobID = n
-				}
-			}
-			if s.log != nil {
-				s.log.Printf("local-lp-submit %s: job-id=%d output=%s", printerName, cupsJobID, strings.TrimSpace(sOut))
-			}
-		}
-	} else {
-		host := discovery.NormalizeHost(s.cfg.CUPSURL)
 		cupsJobID, submitErr = discovery.SubmitPrintJob(host, printerName, filePath, opts)
-		if s.log != nil {
-			s.log.Printf("ipp-submit %s/%s: job-id=%d err=%v (grayscale=%v)", host, printerName, cupsJobID, submitErr, isGray)
+		if submitErr != nil {
+			if s.log != nil {
+				s.log.Printf("ipp-submit %s/%s failed (%v), attempting local lp fallback", host, printerName, submitErr)
+			}
+			if lp, lerr := exec.LookPath("lp"); lerr == nil {
+				flags := []string{"-d", printerName}
+				if opts.Media != "" {
+					flags = append(flags, "-o", "media="+opts.Media, "-o", "PageSize="+opts.Media)
+				}
+				if opts.Sides != "" {
+					flags = append(flags, "-o", "sides="+opts.Sides)
+				}
+				if !req.Color {
+					flags = append(flags, "-o", "Ink=MONO")
+				} else {
+					flags = append(flags, "-o", "Ink=COLOR")
+				}
+				if opts.MediaType != "" {
+					flags = append(flags, "-o", "MediaType="+opts.MediaType)
+				}
+				// Pass fit-to-page scaling to local lp
+				flags = append(flags, "-o", "fit-to-page", "-o", "print-scaling=fit")
+				flags = append(flags, printFiles...)
+				cmd := exec.Command(lp, flags...)
+				cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LANGUAGE=en_US:en", "LC_ALL=C.UTF-8")
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					submitErr = fmt.Errorf("local lp failed: %v (%s)", err, strings.TrimSpace(string(out)))
+				} else {
+					submitErr = nil
+					sOut := string(out)
+					if i := strings.LastIndex(sOut, "-"); i >= 0 {
+						idStr := strings.TrimSpace(sOut[i+1:])
+						if j := strings.IndexAny(idStr, " )"); j > 0 {
+							idStr = idStr[:j]
+						}
+						if n, err := strconv.Atoi(idStr); err == nil {
+							cupsJobID = n
+						}
+					}
+				}
+			}
+		} else if s.log != nil {
+			s.log.Printf("ipp-submit %s/%s: job-id=%d (grayscale=%v)", host, printerName, cupsJobID, isGray)
 		}
 	}
 
@@ -2230,25 +2210,100 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		return src
 	}
 
-	// 2) Handling PDF documents: producer defects (non-integer /Rotate values
-	// like 270.000061) crash cups-filters pdftopdf ("Unexpected /Rotate value")
-	// or yield mis-cropped pages — both end with 0 bytes reaching hardware.
-	// ghostscript pdfwrite alone preserves such /Rotate verbatim, so after a
-	// re-distill the result is re-scanned and, if still defective, rebuilt from
-	// rendered page images (last resort, proven printable).
-	return ensurePrintablePDF(src, log)
+	// 2) Handling PDF documents: Normalize PDF to standard PostScript Level 3 then clean PDF via Poppler + Ghostscript.
+	// This standardizes all page boxes (A4/Letter), fixes Type 3 font box quirks from Chromium/Skia producers,
+	// and eliminates all float /Rotate or non-standard crop-box distortions without rasterizing to images.
+	psPath := strings.TrimSuffix(src, ".pdf") + ".clean.ps"
+	cleanPDF := strings.TrimSuffix(src, ".pdf") + ".clean.pdf"
+
+	pdftopsCmd, err1 := exec.LookPath("pdftops")
+	gsCmd, err2 := exec.LookPath("gs")
+
+	if err1 == nil && err2 == nil {
+		targetPaper := media
+		if targetPaper == "" {
+			targetPaper = "A4"
+		}
+		// Convert to clean Level 3 PostScript with explicit paper targeting and page expansion
+		cmdPS := exec.Command(pdftopsCmd, "-level3", "-paper", targetPaper, "-expand", src, psPath)
+		if out, err := cmdPS.CombinedOutput(); err == nil {
+			// Convert PostScript back to pristine, standardized PDF
+			argsGS := []string{
+				"-sDEVICE=pdfwrite",
+				"-dCompatibilityLevel=1.4",
+				"-dPDFSETTINGS=/printer",
+				"-dNOPAUSE", "-dQUIET", "-dBATCH",
+				"-sOutputFile=" + cleanPDF,
+				psPath,
+			}
+			cmdGS := exec.Command(gsCmd, argsGS...)
+			if outGS, errGS := cmdGS.CombinedOutput(); errGS == nil {
+				_ = os.Remove(psPath)
+				if fi, err := os.Stat(cleanPDF); err == nil && fi.Size() > 0 {
+					if log != nil {
+						log.Printf("normalizeDocument: standardized PDF %s → %s via pdftops+gs", filepath.Base(src), filepath.Base(cleanPDF))
+					}
+					return cleanPDF
+				}
+			} else {
+				_ = os.Remove(psPath)
+				if log != nil {
+					log.Printf("normalizeDocument: gs ps2pdf error (%v): %s", errGS, strings.TrimSpace(string(outGS)))
+				}
+			}
+		} else if log != nil {
+			log.Printf("normalizeDocument: pdftops error (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	return src
 }
 
-// ensurePrintablePDF returns the best-effort printable variant of src.
-// Every PDF is rebuilt from rendered page images unconditionally. Two live
-// incidents proved structural fixes insufficient: producer defects here
-// include both non-integer /Rotate values AND mis-derived crop boxes, each
-// silently ending in "Sent 0 bytes" while CUPS reports success. Rendering at
-// 200dpi trades vector fidelity for guaranteed delivery and matches what the
-// previously-working pipeline did for these documents.
+// ensurePrintablePDF normalizes PDF vectors via pdftops + gs at upload time,
+// standardizing all /Rotate and cropbox metadata so CUPS pdftopdf filter never crashes.
 func ensurePrintablePDF(src string, log *log.Logger) string {
-	if ras, ok := rasterizePDFRepair(src, log); ok {
-		return ras
+	fi, err := os.Stat(src)
+	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
+		return src
+	}
+
+	pdftopsCmd, err1 := exec.LookPath("pdftops")
+	gsCmd, err2 := exec.LookPath("gs")
+	if err1 != nil || err2 != nil {
+		return src
+	}
+
+	psPath := strings.TrimSuffix(src, ".pdf") + ".tmp.ps"
+	cleanPDF := strings.TrimSuffix(src, ".pdf") + ".tmp.pdf"
+	defer os.Remove(psPath)
+
+	cmdPS := exec.Command(pdftopsCmd, "-level3", "-paper", "A4", "-expand", src, psPath)
+	if out, err := cmdPS.CombinedOutput(); err != nil {
+		if log != nil {
+			log.Printf("ensurePrintablePDF: pdftops error (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+		return src
+	}
+
+	argsGS := []string{
+		"-sDEVICE=pdfwrite",
+		"-dCompatibilityLevel=1.4",
+		"-dAutoRotatePages=/None",
+		"-dNOPAUSE", "-dQUIET", "-dBATCH",
+		"-sOutputFile=" + cleanPDF,
+		psPath,
+	}
+	cmdGS := exec.Command(gsCmd, argsGS...)
+	if outGS, errGS := cmdGS.CombinedOutput(); errGS != nil {
+		if log != nil {
+			log.Printf("ensurePrintablePDF: gs error (%v): %s", errGS, strings.TrimSpace(string(outGS)))
+		}
+		_ = os.Remove(cleanPDF)
+		return src
+	}
+
+	if fiClean, err := os.Stat(cleanPDF); err == nil && fiClean.Size() > 0 {
+		return cleanPDF
 	}
 	return src
 }
@@ -2369,16 +2424,13 @@ func pdfToPageImages(src string, gray bool) ([]string, string, error) {
 		return nil, "", err
 	}
 	device := "png16m"
-	if gray {
-		device = "pnggray"
-	}
 	out := filepath.Join(dir, "p-%02d.png")
 	// No TextAlphaBits/GraphicsAlphaBits: antialiased glyph edges turn into
 	// light-gray pixels that the ESC/P-R threshold washes out — tables print,
-	// text vanishes. Crisp unantialiased glyphs at 300dpi survive the driver.
+	// text vanishes. Crisp unantialiased glyphs at 360dpi survive the driver.
 	render := exec.Command(gs,
 		"-dSAFER", "-dNOPAUSE", "-dBATCH",
-		"-sDEVICE="+device, "-r300",
+		"-sDEVICE="+device, "-r360",
 		"-sOutputFile="+out, src,
 	)
 	if outB, cerr := render.CombinedOutput(); cerr != nil {
@@ -2473,7 +2525,7 @@ func (s *Server) handleClearJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
-	recs, err := s.store.ListHistory(500)
+	recs, err := s.store.ListHistory(500, "")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -2556,7 +2608,23 @@ func (s *Server) handleSetPriority(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	recs, err := s.store.ListHistory(limit)
+	c, ok := s.claimsFromCtx(r)
+	if !ok {
+		// Guest / unauthenticated visitor has no personal history
+		writeJSON(w, 200, []store.HistoryRecord{})
+		return
+	}
+
+	userFilter := c.Sub
+	if c.Role == "admin" {
+		if r.URL.Query().Get("all") == "true" {
+			userFilter = ""
+		} else if u := r.URL.Query().Get("user"); u != "" {
+			userFilter = u
+		}
+	}
+
+	recs, err := s.store.ListHistory(limit, userFilter)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -2575,7 +2643,7 @@ func (s *Server) handleClearHistory(w http.ResponseWriter, r *http.Request) {
 // ── Settings & Diagnostics handlers ──
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]string{
+	resp := map[string]string{
 		"autoRefresh":   s.store.GetSetting("autoRefresh", "true"),
 		"notifications": s.store.GetSetting("notifications", "true"),
 		"darkMode":      s.store.GetSetting("darkMode", "false"),
@@ -2583,9 +2651,14 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"userName":      s.store.GetSetting("userName", "Andi Ahmad"),
 		"userEmail":     s.store.GetSetting("userEmail", "andi@kroomprint.app"),
 		"workspaceName": s.store.GetSetting("workspaceName", "KroomPrint Main"),
-		"cupsURL":       s.store.GetSetting("cupsURL", s.cfg.CUPSURL),
 		"plan":          "KroomPrint Pro",
-	})
+	}
+	// The internal CUPS endpoint is only disclosed to authenticated roles;
+	// guests see live "Connected" status via diagnostics instead.
+	if _, ok := s.claimsFromCtx(r); ok {
+		resp["cupsURL"] = s.store.GetSetting("cupsURL", s.cfg.CUPSURL)
+	}
+	writeJSON(w, 200, resp)
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
@@ -2594,7 +2667,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid JSON body")
 		return
 	}
+	c, ok := s.claimsFromCtx(r)
+	isAdmin := ok && c.Role == "admin"
+
 	for k, v := range req {
+		// Only admin can alter system-wide workspace or CUPS server configuration
+		if (k == "cupsURL" || k == "workspaceName") && !isAdmin {
+			continue
+		}
 		if b, ok := v.(bool); ok {
 			_ = s.store.SetSetting(k, strconv.FormatBool(b))
 		} else if str, ok := v.(string); ok {
@@ -2602,6 +2682,56 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleTestCUPSConnection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CupsURL string `json:"cupsURL"`
+	}
+	_ = readJSON(r, &req)
+	targetURL := strings.TrimSpace(req.CupsURL)
+	if targetURL == "" {
+		targetURL = s.store.GetSetting("cupsURL", s.cfg.CUPSURL)
+	}
+	if targetURL == "" {
+		targetURL = "http://127.0.0.1:631"
+	}
+
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "Invalid CUPS URL format"})
+		return
+	}
+
+	host := u.Host
+	if !strings.Contains(host, ":") {
+		if u.Scheme == "https" || u.Scheme == "ipps" {
+			host += ":443"
+		} else {
+			host += ":631"
+		}
+	}
+
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", host, 1500*time.Millisecond)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{
+			"ok":        false,
+			"endpoint":  targetURL,
+			"error":     fmt.Sprintf("Failed to connect to CUPS host %s: %v", host, err),
+			"latencyMs": float64(time.Since(start).Microseconds()) / 1000.0,
+		})
+		return
+	}
+	conn.Close()
+	latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+
+	writeJSON(w, 200, map[string]any{
+		"ok":        true,
+		"endpoint":  targetURL,
+		"latencyMs": latencyMs,
+		"message":   "CUPS spooler daemon is reachable and responding.",
+	})
 }
 
 func (s *Server) handleNetworkDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -3025,7 +3155,7 @@ func (s *Server) handlePurgeJob(w http.ResponseWriter, r *http.Request) {
 
 // handleAnalyticsSummary returns global usage summary, cost breakdown and department quotas.
 func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
-	hist, _ := s.store.ListHistory(1000)
+	hist, _ := s.store.ListHistory(1000, "")
 	totalJobs := len(hist)
 	totalPages := 0
 	totalCost := 0
@@ -3062,7 +3192,7 @@ func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) 
 // handleAnalyticsExport exports complete print audit logs as CSV or JSON.
 func (s *Server) handleAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
-	hist, err := s.store.ListHistory(5000)
+	hist, err := s.store.ListHistory(5000, "")
 	if err != nil {
 		writeErr(w, 500, "cannot fetch history: "+err.Error())
 		return

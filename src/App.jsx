@@ -5,7 +5,7 @@ import ErrorBoundary from './components/ui/ErrorBoundary'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
 import ToastStack from './components/ui/Toast'
-import LoginPage from './components/pages/LoginPage'
+import LoginModal from './components/auth/LoginModal'
 import Dashboard from './components/pages/Dashboard'
 import PrintPage from './components/pages/PrintPage'
 import PrintersPage from './components/pages/PrintersPage'
@@ -21,7 +21,7 @@ function Shell() {
 
   const allowedPages = {
     dashboard: true,
-    print: has('admin', 'user'),
+    print: true,
     printers: true,
     queue: true,
     history: true,
@@ -51,32 +51,45 @@ function Shell() {
   }
 
   return (
-    <div className="h-screen flex bg-kroom-noise overflow-hidden">
+    <div className="min-h-screen h-screen flex bg-kroom-noise overflow-hidden">
       {/* Desktop sidebar */}
-      <div className="hidden lg:block h-full">
+      <div className="hidden lg:flex flex-col h-full shrink-0">
         <Sidebar current={effectivePage} onNavigate={handleNavigate} />
       </div>
 
       {/* Mobile drawer */}
       {sidebarOpen && (
         <>
-          <div className="fixed inset-0 z-[60] bg-dark-black-900/40 backdrop-blur-[2px] lg:hidden" onClick={() => setSidebarOpen(false)} />
-          <div className="fixed left-0 top-0 bottom-0 z-[70] lg:hidden modal-in">
-            <Sidebar current={effectivePage} onNavigate={(p) => { handleNavigate(p); setSidebarOpen(false) }} />
+          <div
+            className="fixed inset-0 z-[60] bg-dark-black-900/50 backdrop-blur-[3px] lg:hidden transition-opacity"
+            onClick={() => setSidebarOpen(false)}
+          />
+          <div className="fixed left-0 top-0 bottom-0 z-[70] lg:hidden modal-in shadow-2xl flex flex-col h-full">
+            <Sidebar
+              isMobile
+              current={effectivePage}
+              onNavigate={(p) => {
+                handleNavigate(p)
+                setSidebarOpen(false)
+              }}
+              onClose={() => setSidebarOpen(false)}
+            />
           </div>
         </>
       )}
 
       {/* Main column */}
-      <div className="flex-1 flex flex-col min-w-0 h-full">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden">
         <TopBar
           onNavigate={handleNavigate}
           onLogout={handleLogout}
           onMenu={() => setSidebarOpen(true)}
           user={user}
         />
-        <main className="flex-1 overflow-y-auto">
-          <div className="max-w-[1400px] mx-auto px-6 md:px-8 py-7 md:py-9">{pages[effectivePage]}</div>
+        <main className="flex-1 overflow-y-auto min-h-0">
+          <div className="max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 py-6 md:py-8">
+            {pages[effectivePage]}
+          </div>
         </main>
       </div>
 
@@ -88,26 +101,13 @@ function Shell() {
 export default function App() {
   return (
     <AuthProvider>
-      <AuthenticatedApp />
+      <AppProvider>
+        <ErrorBoundary>
+          <Shell />
+          <LoginModal />
+        </ErrorBoundary>
+        <ToastStack />
+      </AppProvider>
     </AuthProvider>
-  )
-}
-
-function AuthenticatedApp() {
-  const { user } = useAuth()
-
-  // Logged out: render only the login screen. AppProvider (which boots API
-  // data and opens SSE) mounts exclusively for authenticated sessions.
-  if (!user) {
-    return <LoginPage />
-  }
-
-  return (
-    <AppProvider>
-      <ErrorBoundary>
-        <Shell />
-      </ErrorBoundary>
-      <ToastStack />
-    </AppProvider>
   )
 }

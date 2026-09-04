@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { useAuth } from './AuthContext'
 
 const AppContext = createContext(null)
 
@@ -22,6 +23,7 @@ const normalizeSettings = (st = {}) => ({
 })
 
 export function AppProvider({ children }) {
+  const { user } = useAuth()
   const [printers, setPrinters] = useState([])
   const [jobs, setJobs] = useState([])
   const [history, setHistory] = useState([])
@@ -38,7 +40,18 @@ export function AppProvider({ children }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200)
   }, [])
 
-  // ── Initial load + health ──
+  const refreshHistory = useCallback(async (params) => {
+    try {
+      const hs = await api.listHistory(params)
+      setHistory(hs)
+      return hs
+    } catch (e) {
+      console.warn('Cannot load history:', e)
+      return []
+    }
+  }, [])
+
+  // ── Initial load + health + re-sync on user auth changes ──
   useEffect(() => {
     let cancelled = false
     async function boot() {
@@ -48,7 +61,12 @@ export function AppProvider({ children }) {
           setBackendInfo(health)
           setConnected(true)
         }
-        const [ps, js, hs, st] = await Promise.all([api.listPrinters(), api.listJobs(), api.listHistory(), api.getSettings()])
+        const [ps, js, hs, st] = await Promise.all([
+          api.listPrinters(),
+          api.listJobs(),
+          api.listHistory(),
+          api.getSettings(),
+        ])
         if (cancelled) return
         setPrinters(ps)
         setJobs(js)
@@ -67,7 +85,16 @@ export function AppProvider({ children }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [user?.username, user?.role, toast])
+
+  // ── Dark Mode Sync ──
+  useEffect(() => {
+    if (settings.darkMode) {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+  }, [settings.darkMode])
 
   // ── Real-Time SSE Event Streaming (Domain 4) ──
   useEffect(() => {
@@ -91,6 +118,16 @@ export function AppProvider({ children }) {
             if (exists) return list.map((x) => (x.id === j.id ? { ...x, ...j } : x))
             return [j, ...list.filter((x) => !x._optimistic && x.id !== j.id)]
           })
+          // Native browser notification
+          if (event.type === 'job_completed' && settings.notifications) {
+            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                new Notification('KroomPrint · Cetak Selesai', {
+                  body: `Dokumen "${j.name || 'Print Job'}" telah berhasil dicetak.`,
+                })
+              } catch {}
+            }
+          }
         }
       } else if (event.type === 'job_deleted') {
         const id = event.data?.id || event.id
@@ -98,10 +135,11 @@ export function AppProvider({ children }) {
       }
     })
     return () => unsub()
-  }, [])
+  }, [settings.notifications])
 
   // ── Live polling (queue + printer status + history) with adaptive intervals ──
   useEffect(() => {
+    if (!settings.autoRefresh) return
     let timer
     let active = true
     async function poll() {
@@ -136,7 +174,7 @@ export function AppProvider({ children }) {
       active = false
       clearTimeout(timer)
     }
-  }, [])
+  }, [settings.autoRefresh])
 
   // ── Toast helper (re-export with defaults) ──
 
@@ -418,6 +456,16 @@ export function AppProvider({ children }) {
     return res
   }, [toast])
 
+  const changePassword = useCallback(async (oldPassword, newPassword) => {
+    const res = await api.changePassword(oldPassword, newPassword)
+    toast('Password successfully updated', 'success')
+    return res
+  }, [toast])
+
+  const testCUPS = useCallback(async (cupsURL) => {
+    return await api.testCUPSConnection(cupsURL)
+  }, [])
+
   // ── Derived ──
   const defaultPrinter = useMemo(() => printers.find((p) => p.isDefault) || printers[0], [printers])
   const activeCount = useMemo(() => printers.filter((p) => p.status === 'online' && p.enabled).length, [printers])
@@ -435,8 +483,8 @@ export function AppProvider({ children }) {
       scanForPrinters, addDiscovered,
       // jobs
       submitJob, cancelJob, pauseJob, resumeJob, retryJob, releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue,
-      // history & settings & diagnostics
-      clearHistory, updateSettings, runDiagnostics, resetAllData,
+      // history & settings & diagnostics & auth
+      refreshHistory, clearHistory, updateSettings, runDiagnostics, resetAllData, changePassword, testCUPS,
       // derived
       defaultPrinter, activeCount, queueCount,
     }),
@@ -446,7 +494,7 @@ export function AppProvider({ children }) {
       setDefaultPrinter, togglePrinterEnable, togglePrinterPause, testPrint,
       cleanHead, nozzleCheck, getPrinterHealth,
       scanForPrinters, addDiscovered, submitJob, cancelJob, pauseJob, resumeJob, retryJob,
-      releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue, clearHistory, updateSettings, runDiagnostics, resetAllData,
+      releaseSecureJob, rerouteJob, purgeJob, reorderQueue, setJobPriority, clearQueue, refreshHistory, clearHistory, updateSettings, runDiagnostics, resetAllData, changePassword, testCUPS,
       defaultPrinter, activeCount, queueCount,
     ]
   )

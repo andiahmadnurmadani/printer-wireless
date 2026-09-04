@@ -125,7 +125,13 @@ export const api = {
   setJobPriority: (id, priority) => request(`/api/jobs/${id}/priority`, { method: 'POST', body: JSON.stringify({ priority }) }),
 
   // History & Analytics
-  listHistory: () => request('/api/history'),
+  listHistory: (params = {}) => {
+    const q = new URLSearchParams()
+    if (params.all) q.set('all', 'true')
+    if (params.user) q.set('user', params.user)
+    const qs = q.toString()
+    return request(`/api/history${qs ? `?${qs}` : ''}`)
+  },
   clearHistory: () => request('/api/history', { method: 'DELETE' }),
   getAnalyticsSummary: () => request('/api/analytics/summary'),
   getAnalyticsExportUrl: (format = 'csv') => `${BASE}/api/analytics/export?format=${format}`,
@@ -133,6 +139,7 @@ export const api = {
   // Settings & Diagnostics
   getSettings: () => request('/api/settings'),
   putSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  testCUPSConnection: (cupsURL) => request('/api/settings/test-cups', { method: 'POST', body: JSON.stringify({ cupsURL }) }),
   getDiagnostics: () => request('/api/diagnostics/network'),
   resetAllData: () => request('/api/settings/reset', { method: 'POST' }),
 

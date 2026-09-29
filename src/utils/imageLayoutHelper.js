@@ -207,6 +207,9 @@ export function calculateImageLayout({
         const itemIdx = r * cols + c
         if (itemIdx >= repeatCount) break
 
+        const cellLeft_mm = marginMm + c * cellW_mm
+        const cellTop_mm = marginMm + r * cellH_mm
+
         let x_mm = cellLeft_mm + (cellW_mm - singleItemW_mm) / 2 + offX
         let y_mm = cellTop_mm + (cellH_mm - singleItemH_mm) / 2 + offY
 

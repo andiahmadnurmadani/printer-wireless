@@ -617,8 +617,18 @@ export default function DocumentLayoutControls({
             <IconRefresh size={14} />
             <span>Cetak Dua Sisi (Bolak-Balik)</span>
           </label>
-          <span className="font-geist text-[11px] font-semibold text-dark-black-900/60">
-            {canDuplex ? 'Didukung Hardware Printer' : 'Printer Simplex (Manual)'}
+          <span className={`font-geist text-[11px] font-bold px-2 py-0.5 rounded-[5px] border ${
+            canDuplex
+              ? 'bg-lime-300 text-dark-black-900 border-dark-black-900/20'
+              : (duplex || manualDuplex)
+                ? 'bg-amber-300 text-dark-black-900 border-dark-black-900/20'
+                : 'bg-vanilla-300 text-dark-black-900/70 border-dark-black-900/20'
+          }`}>
+            {canDuplex
+              ? 'Hardware Otomatis'
+              : (duplex || manualDuplex)
+                ? 'Manual Duplex Aktif'
+                : 'Printer Simplex (Manual)'}
           </span>
         </div>
 
@@ -646,17 +656,15 @@ export default function DocumentLayoutControls({
           {/* 2. Bolak-Balik Sisi Panjang (Buku) */}
           <button
             type="button"
-            disabled={!canDuplex && !manualDuplex}
             onClick={() => {
-              if (canDuplex && onToggleDuplex) {
-                onToggleDuplex(true)
+              if (canDuplex) {
+                if (onToggleDuplex) onToggleDuplex(true)
                 if (onToggleManualDuplex) onToggleManualDuplex(false)
-                update({ duplexMode: 'long' })
-              } else if (onToggleManualDuplex) {
-                onToggleManualDuplex(true)
+              } else {
+                if (onToggleManualDuplex) onToggleManualDuplex(true)
                 if (onToggleDuplex) onToggleDuplex(false)
-                update({ duplexMode: 'long' })
               }
+              update({ duplexMode: 'long' })
             }}
             className={`p-2.5 rounded-[10px] border-2 font-figtree text-left transition-all cursor-pointer ${
               (duplex || manualDuplex) && config.duplexMode === 'long'
@@ -673,17 +681,15 @@ export default function DocumentLayoutControls({
           {/* 3. Bolak-Balik Sisi Pendek (Kalender) */}
           <button
             type="button"
-            disabled={!canDuplex && !manualDuplex}
             onClick={() => {
-              if (canDuplex && onToggleDuplex) {
-                onToggleDuplex(true)
+              if (canDuplex) {
+                if (onToggleDuplex) onToggleDuplex(true)
                 if (onToggleManualDuplex) onToggleManualDuplex(false)
-                update({ duplexMode: 'short' })
-              } else if (onToggleManualDuplex) {
-                onToggleManualDuplex(true)
+              } else {
+                if (onToggleManualDuplex) onToggleManualDuplex(true)
                 if (onToggleDuplex) onToggleDuplex(false)
-                update({ duplexMode: 'short' })
               }
+              update({ duplexMode: 'short' })
             }}
             className={`p-2.5 rounded-[10px] border-2 font-figtree text-left transition-all cursor-pointer ${
               (duplex || manualDuplex) && config.duplexMode === 'short'
@@ -703,8 +709,17 @@ export default function DocumentLayoutControls({
           <div className="flex items-start gap-2 p-2.5 bg-amber-50 border border-amber-300 rounded-[10px] text-amber-900">
             <IconAlert size={15} className="mt-0.5 shrink-0 text-amber-600" />
             <div className="text-[11.5px] font-figtree leading-snug">
-              <span className="font-bold">Printer Simplex: </span>
-              Gunakan opsi <strong>Hanya Ganjil</strong> terlebih dahulu, balik tumpukan kertas pada baki printer, lalu lanjutkan cetak dengan opsi <strong>Hanya Genap</strong>.
+              {(duplex || manualDuplex) ? (
+                <>
+                  <span className="font-bold">Panduan Manual Duplex Aktif: </span>
+                  Sistem akan otomatis mencetak halaman ganjil terlebih dahulu, lalu menampilkan jendela panduan untuk membalik tumpukan kertas di baki printer sebelum mencetak halaman genap.
+                </>
+              ) : (
+                <>
+                  <span className="font-bold">Printer Simplex: </span>
+                  Klik <strong>Sisi Panjang</strong> atau <strong>Sisi Pendek</strong> di atas untuk mencetak bolak-balik secara bertahap (ganjil lalu genap).
+                </>
+              )}
             </div>
           </div>
         )}

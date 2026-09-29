@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -117,7 +118,19 @@ func placeholders(n int) string {
 // ── Jobs CRUD ──
 
 func (s *Store) ListJobs() ([]Job, error) {
-	rows, err := s.db.Query("SELECT " + jobCols + " FROM jobs ORDER BY created_at DESC")
+	ctx, cancel := WithQueryTimeout(context.Background())
+	defer cancel()
+	return s.ListJobsCtx(ctx)
+}
+
+// ListJobsCtx is ListJobs with a caller-supplied context. Because SQLite is
+// pinned to a single pooled connection (SetMaxOpenConns(1)), one wedged query
+// used to block every other request forever — the whole API froze with all
+// goroutines parked in database/sql.(*DB).conn (observed live 2026-09-24).
+// Callers that run on a timer/background loop must pass a deadline so a stuck
+// connection surfaces as an error instead of hanging the panel.
+func (s *Store) ListJobsCtx(ctx context.Context) ([]Job, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+jobCols+" FROM jobs ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}

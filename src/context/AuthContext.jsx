@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
-import { api, setToken } from '../api/client'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { api, getToken, setToken } from '../api/client'
 
 const AUTH_KEY = 'kroomprint_auth'
 const AuthContext = createContext(null)
@@ -36,6 +36,16 @@ export function AuthProvider({ children }) {
     setLoginModalMsg('')
   }, [])
 
+  const logout = useCallback(() => {
+    setToken('')
+    try {
+      localStorage.removeItem(AUTH_KEY)
+      localStorage.removeItem('kroomprint_session')
+      localStorage.removeItem('kroomprint_page')
+    } catch {}
+    setUser(GUEST_USER)
+  }, [])
+
   const login = useCallback(async (username, password) => {
     const res = await api.login(username, password)
     localStorage.setItem(AUTH_KEY, JSON.stringify(res.user))
@@ -43,13 +53,43 @@ export function AuthProvider({ children }) {
     return res.user
   }, [])
 
-  const logout = useCallback(() => {
-    setToken('')
-    localStorage.removeItem(AUTH_KEY)
-    localStorage.removeItem('kroomprint_session')
-    localStorage.removeItem('kroomprint_page')
-    setUser(GUEST_USER)
+  // Auto-verify token with backend on boot
+  useEffect(() => {
+    const token = getToken()
+    if (!token) {
+      if (user?.role !== 'guest') setUser(GUEST_USER)
+      return
+    }
+    let active = true
+    api.me()
+      .then((res) => {
+        if (!active) return
+        if (res?.user) {
+          localStorage.setItem(AUTH_KEY, JSON.stringify(res.user))
+          setUser(res.user)
+        }
+      })
+      .catch((err) => {
+        if (!active) return
+        console.warn('Session verification failed on startup:', err)
+        logout()
+      })
+    return () => {
+      active = false
+    }
   }, [])
+
+  // Listen for 401 session expiry events dispatched by client.js
+  useEffect(() => {
+    const handleExpired = () => {
+      logout()
+      openLoginModal('Sesi login Anda telah kedaluwarsa. Silakan masuk kembali.')
+    }
+    window.addEventListener('kroomprint:auth-expired', handleExpired)
+    return () => {
+      window.removeEventListener('kroomprint:auth-expired', handleExpired)
+    }
+  }, [logout, openLoginModal])
 
   const isAuthenticated = Boolean(user && user.role !== 'guest' && user.id !== 'guest')
 

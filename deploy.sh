@@ -20,9 +20,20 @@ rm -rf "$PROJ/dist"
 cd "$PROJ"
 npm run build
 
-echo "[3/3] Fixing permissions + restarting PM2..."
+echo "[3/4] Building backend (Go)..."
+if command -v go >/dev/null 2>&1; then
+  cd "$PROJ/backend"
+  go build -buildvcs=false -o kroomprint-backend .
+  chmod 755 "$PROJ/backend/kroomprint-backend"
+  echo "  → Backend binary compiled successfully"
+else
+  echo "  → 'go' not found, skipping backend compile"
+fi
+
+echo "[4/4] Fixing permissions + restarting PM2..."
 chmod -R 755 "$PROJ/dist"
 pm2 restart kroomprint-web
+pm2 restart kroomprint-api || true
 
 echo ""
 echo "✓ Deploy selesai!"

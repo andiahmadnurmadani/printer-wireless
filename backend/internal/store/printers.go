@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -112,7 +113,9 @@ func boolInt(b bool) int {
 // ── CRUD ──
 
 func (s *Store) ListPrinters() ([]Printer, error) {
-	rows, err := s.db.Query("SELECT " + printerCols + " FROM printers ORDER BY added_at ASC")
+	ctx, cancel := WithQueryTimeout(context.Background())
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, "SELECT "+printerCols+" FROM printers ORDER BY added_at ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +133,9 @@ func (s *Store) ListPrinters() ([]Printer, error) {
 }
 
 func (s *Store) GetPrinter(id string) (Printer, error) {
-	row := s.db.QueryRow("SELECT "+printerCols+" FROM printers WHERE id = ?", id)
+	ctx, cancel := WithQueryTimeout(context.Background())
+	defer cancel()
+	row := s.db.QueryRowContext(ctx, "SELECT "+printerCols+" FROM printers WHERE id = ?", id)
 	return scanPrinter(row)
 }
 

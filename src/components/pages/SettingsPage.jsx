@@ -679,7 +679,9 @@ export default function SettingsPage() {
                   <div key={p.id} className="py-2.5 flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="font-figtree font-semibold text-[13.5px] text-dark-black-900 truncate">{p.name}</div>
-                      <div className="font-geist text-[11px] text-dark-black-900/50 truncate">{p.address}</div>
+                      <div className="font-geist text-[11px] text-dark-black-900/50 truncate">
+                        {p.address?.startsWith('usb://') || p.connection === 'USB' ? 'USB Direct (Local Port)' : (p.address || 'Local Port')}
+                      </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="font-geist text-[12px] font-medium text-dark-black-900/70">{p.latencyMs?.toFixed(1)} ms</span>

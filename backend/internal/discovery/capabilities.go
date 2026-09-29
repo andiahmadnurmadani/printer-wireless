@@ -64,7 +64,9 @@ var mockPrinters = []mockProfile{
 func defaultSizes() []string { return []string{"A4", "A5", "Letter", "Legal"} }
 func defaultQuals() []string { return []string{"Draft", "Standard", "High"} }
 func defaultScalings() []string {
-	return []string{"Fit to page", "Shrink to fit", "Actual size", "Custom"}
+	// "Fill page (Crop)" is included because the panel now offers it for both
+	// documents and photos (it was reachable only implicitly for photos before).
+	return []string{"Fit to page", "Fill page (Crop)", "Shrink to fit", "Actual size"}
 }
 func defaultOrients() []string { return []string{"Portrait", "Landscape"} }
 
@@ -260,28 +262,28 @@ func ippToCaps(r *ippResponse) *Capabilities {
 	}
 }
 
-// cleanMedia normalizes IPP media names (iso_a4_210x297mm → A4).
+// cleanMedia normalizes the media names reported over IPP to the shared panel
+// names (iso_a4_210x297mm → A4, na_index-5x7_5x7in → 13x18 cm (5x7 in), ...).
+// Anything CUPS reports that is not in the catalogue is passed through so the
+// capability list still reflects the device truthfully.
 func cleanMedia(media []string) []string {
-	m := map[string]string{
-		"iso_a4_210x297mm":         "A4",
-		"iso_a5_148x210mm":         "A5",
-		"iso_a6_105x148mm":         "A6",
-		"iso_a3_297x420mm":         "A3",
-		"na_letter_8.5x11in":       "Letter",
-		"na_legal_8.5x14in":        "Legal",
-		"na_executive_7.25x10.5in": "Executive",
-		"na_ledger_11x17in":        "Tabloid",
-		"na_index-4x6_4x6in":       "4x6 Photo",
-		"na_index-5x7_5x7in":       "5x7 Photo",
-	}
 	var out []string
 	seen := map[string]bool{}
 	for _, mname := range media {
-		label := m[strings.ToLower(strings.TrimSpace(mname))]
-		if label == "" {
-			label = mname
+		name := strings.TrimSpace(mname)
+		if name == "" {
+			continue
 		}
-		label = strings.ToUpper(label[:1]) + label[1:]
+		label := UINameForPPD(name)
+		if label == name {
+			// Not a PPD keyword: try the IPP media catalogue.
+			for _, ps := range PageSizes {
+				if ps.IPP != "" && strings.EqualFold(ps.IPP, name) {
+					label = ps.UI
+					break
+				}
+			}
+		}
 		if !seen[label] {
 			seen[label] = true
 			out = append(out, label)

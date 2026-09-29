@@ -2,7 +2,17 @@
 // KroomPrint API client — semua data dari backend Go
 // ─────────────────────────────────────────────
 
-const BASE = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8088` : 'http://localhost:8088')
+const BASE = import.meta.env.VITE_API_URL !== undefined
+  ? import.meta.env.VITE_API_URL
+  : (typeof window !== 'undefined'
+      ? (['localhost', '127.0.0.1'].includes(window.location.hostname) ||
+         window.location.port === '5174' ||
+         window.location.port === '80' ||
+         window.location.port === '443' ||
+         window.location.port === ''
+          ? ''
+          : `${window.location.protocol}//${window.location.hostname}:8088`)
+      : 'http://100.90.80.85:8088')
 
 const TOKEN_KEY = 'kroomprint_token'
 
@@ -32,6 +42,15 @@ async function request(path, options = {}) {
       if (data?.error) msg = data.error
     } catch {
       /* ignore */
+    }
+    if (res.status === 401 && path !== '/api/auth/login') {
+      setToken('')
+      try {
+        localStorage.removeItem('kroomprint_auth')
+      } catch {}
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('kroomprint:auth-expired', { detail: msg }))
+      }
     }
     throw new Error(msg)
   }
@@ -107,6 +126,15 @@ export const api = {
             const data = await res.json()
             if (data?.error) msg = data.error
           } catch {}
+          if (res.status === 401) {
+            setToken('')
+            try {
+              localStorage.removeItem('kroomprint_auth')
+            } catch {}
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('kroomprint:auth-expired', { detail: msg }))
+            }
+          }
           throw new Error(msg)
         }
         return res.json()

@@ -44,7 +44,6 @@ export default function HistoryPage() {
     failed: history.filter((h) => h.status === 'failed').length,
     cancelled: history.filter((h) => h.status === 'cancelled').length,
     totalPages: history.reduce((acc, h) => acc + (h.status === 'completed' ? h.pages * h.copies : 0), 0),
-    totalSpend: history.reduce((acc, h) => acc + (h.status === 'completed' ? (h.cost || 0) : 0), 0),
   }), [history])
 
   return (
@@ -100,7 +99,7 @@ export default function HistoryPage() {
               { label: 'Total jobs', value: history.length, icon: <IconHistory size={18} />, bg: 'bg-lime-300' },
               { label: 'Completed', value: stats.completed, icon: <IconPrinter size={18} />, bg: 'bg-ok-100' },
               { label: 'Pages printed', value: stats.totalPages, icon: <IconDownload size={18} />, bg: 'bg-sky-blue-100' },
-              { label: 'Total Spend', value: `Rp ${stats.totalSpend.toLocaleString('id-ID')}`, icon: <IconRefresh size={18} />, bg: 'bg-amber-300' },
+              { label: 'Failed', value: stats.failed, icon: <IconRefresh size={18} />, bg: 'bg-err-100' },
             ].map((s) => (
               <div key={s.label} className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[16px] p-4 flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-[11px] border border-dark-black-900 ${s.bg} flex items-center justify-center text-dark-black-900 shrink-0`}>
@@ -187,7 +186,7 @@ export default function HistoryPage() {
               <table className="w-full text-left">
                 <thead>
                   <tr className="border-b-2 border-dark-black-900 bg-vanilla-100">
-                    {['Document', 'Printer', 'Dept / User', 'Pages', 'Cost (Rp)', 'Status', 'When', 'Duration', ''].map((h) => (
+                    {['Document', 'Printer', 'Dept / User', 'Pages', 'Status', 'When', 'Duration', ''].map((h) => (
                       <th key={h} className="px-4 py-3 font-figtree text-[11.5px] font-semibold text-dark-black-900/60 uppercase tracking-wide whitespace-nowrap">
                         {h}
                       </th>
@@ -213,10 +212,6 @@ export default function HistoryPage() {
                         <td className="px-4 py-3.5 font-figtree text-[13px] text-dark-black-900/80">
                           <span className="font-medium text-dark-black-900 block">{h.department || 'Engineering'}</span>
                           <span className="text-[11px] text-dark-black-900/50">{h.user || 'Andi Ahmad'}</span>
-                        </td>
-                        <td className="px-4 py-3.5 font-geist text-[13px] text-dark-black-900/70">{h.pages * h.copies}</td>
-                        <td className="px-4 py-3.5 font-geist font-bold text-[13px] text-dark-black-900">
-                          Rp {(h.cost || 0).toLocaleString('id-ID')}
                         </td>
                         <td className="px-4 py-3.5">
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full border text-[11px] font-semibold font-figtree ${meta.cls}`}>
@@ -284,7 +279,6 @@ export default function HistoryPage() {
                 { label: 'Department', value: detail.department || 'Engineering' },
                 { label: 'User', value: detail.user || 'Andi Ahmad' },
                 { label: 'Total Pages', value: String(detail.pages * detail.copies) },
-                { label: 'Cost Charged', value: `Rp ${(detail.cost || 0).toLocaleString('id-ID')}` },
                 { label: 'Duration', value: detail.duration || '—' },
               ].map((row) => (
                 <div key={row.label} className="p-3 rounded-[12px] border border-dark-black-900/20 bg-vanilla-100">

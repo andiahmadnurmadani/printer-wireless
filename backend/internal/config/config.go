@@ -55,7 +55,7 @@ func Load() *Config {
 	if v := os.Getenv("KROOM_ORIGINS"); v != "" {
 		c.AllowedOrigins = splitComma(v)
 	} else {
-		c.AllowedOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173"}
+		c.AllowedOrigins = []string{"*", "http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:5173", "http://127.0.0.1:5173"}
 	}
 	return c
 }

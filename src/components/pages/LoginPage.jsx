@@ -77,7 +77,7 @@ export default function LoginPage() {
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin"
+                placeholder="Kolab"
                 className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[12px] px-4 py-3 font-figtree text-[14.5px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
               />
             </label>

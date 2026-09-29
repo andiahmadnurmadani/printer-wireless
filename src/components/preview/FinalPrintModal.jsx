@@ -4,6 +4,12 @@ import { renderPdfPageToCanvas } from '../../utils/pdfHelper'
 import {
   IconPrinter, IconUpload, IconEye, IconRefresh, IconX,
 } from '../ui/icons'
+import {
+  calculateImageLayout,
+  DEFAULT_IMAGE_CONFIG,
+  ALIGNMENT_GRID,
+} from '../../utils/imageLayoutHelper'
+import { DEFAULT_DOC_CONFIG } from './DocumentLayoutControls'
 
 /**
  * Fullscreen / High-Res Final Print Inspection Modal
@@ -28,6 +34,8 @@ export default function FinalPrintModal({
   watermark = '',
   selectedPrinter,
   onSubmitJob,
+  imgConfig = DEFAULT_IMAGE_CONFIG,
+  docConfig = DEFAULT_DOC_CONFIG,
 }) {
   const [zoom, setZoom] = useState(100)
   const [activePage, setActivePage] = useState(currentPage)
@@ -38,11 +46,14 @@ export default function FinalPrintModal({
 
   const canvasRef = useRef(null)
   const [imgUrl, setImgUrl] = useState(null)
+  const [imgNatural, setImgNatural] = useState({ width: 1200, height: 800 })
   const [textContent, setTextContent] = useState('')
 
   const isPdf = !!pdfDoc || fileType === 'PDF' || file?.name?.toLowerCase().endsWith('.pdf')
-  const isImage = ['PNG', 'JPG', 'JPEG', 'WEBP', 'BMP', 'HEIC', 'SVG'].includes(fileType)
-  const isText = ['TXT', 'CSV', 'JSON', 'LOG', 'MD'].includes(fileType)
+  const isImage = ['PNG', 'JPG', 'JPEG', 'WEBP', 'BMP', 'HEIC', 'SVG'].includes(fileType) ||
+    /\.(png|jpe?g|webp|bmp|heic|svg)$/i.test(file?.name || '')
+  const isText = ['TXT', 'CSV', 'JSON', 'LOG', 'MD'].includes(fileType) ||
+    /\.(txt|csv|json|log|md)$/i.test(file?.name || '')
 
   useEffect(() => {
     setActivePage(currentPage)
@@ -58,6 +69,11 @@ export default function FinalPrintModal({
     if (isImage) {
       const url = URL.createObjectURL(file)
       setImgUrl(url)
+      const probe = new Image()
+      probe.onload = () => {
+        setImgNatural({ width: probe.naturalWidth, height: probe.naturalHeight })
+      }
+      probe.src = url
       return () => URL.revokeObjectURL(url)
     }
     if (isText) {
@@ -143,6 +159,29 @@ export default function FinalPrintModal({
     return { filter: filter.trim(), opacity }
   }, [quality, simulateMono])
 
+  // Calculate paper width in modal based on paper base scale & zoom
+  const modalPaperWidth = Math.round(
+    (orientation === 'Landscape' ? 480 : 340) * paperDim.baseScale * (zoom / 100)
+  )
+
+  const modalPaperDim = useMemo(() => {
+    return {
+      ...paperDim,
+      baseWidthPx: modalPaperWidth,
+    }
+  }, [paperDim, modalPaperWidth])
+
+  const imageLayout = useMemo(() => {
+    if (!isImage) return null
+    return calculateImageLayout({
+      paperDim: modalPaperDim,
+      imgConfig: imgConfig || DEFAULT_IMAGE_CONFIG,
+      imgNaturalWidth: imgNatural.width,
+      imgNaturalHeight: imgNatural.height,
+      showMargins,
+    })
+  }, [isImage, modalPaperDim, imgConfig, imgNatural, showMargins])
+
   if (!isOpen) return null
 
   const totalSheets = Math.ceil(totalPages / (duplex ? 2 : 1)) * copies
@@ -156,11 +195,6 @@ export default function FinalPrintModal({
       setSubmitting(false)
     }
   }
-
-  // Calculate paper width in modal based on paper base scale & zoom
-  const modalPaperWidth = Math.round(
-    (orientation === 'Landscape' ? 480 : 340) * paperDim.baseScale * (zoom / 100)
-  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-dark-black-900/70 backdrop-blur-sm overflow-y-auto">
@@ -271,9 +305,12 @@ export default function FinalPrintModal({
                   isFlipped ? 'scale-x-[-1]' : ''
                 }`}
               >
-                {/* 5mm Printable Margin Guidelines */}
+                {/* 5 mm printable area guide, scaled to the real sheet */}
                 {showMargins && (
-                  <div className="absolute inset-[10px] border border-dashed border-sky-blue-500/60 pointer-events-none z-20 flex flex-col justify-between p-1">
+                  <div
+                    style={{ inset: `${paperDim.safeZoneInsetPx}px` }}
+                    className="absolute border border-dashed border-sky-blue-500/60 pointer-events-none z-20 flex flex-col justify-between p-1"
+                  >
                     <span className="text-[7.5px] font-geist font-bold text-sky-blue-500/80 tracking-widest leading-none">
                       PRINTABLE AREA ({paperDim.name})
                     </span>
@@ -286,7 +323,9 @@ export default function FinalPrintModal({
                 {/* Content */}
                 <div
                   style={visualFilter}
-                  className={`w-full h-full flex-1 flex items-center justify-center relative overflow-hidden bg-white ${scalingStyles.wrapperClass}`}
+                  className={`w-full h-full flex-1 relative overflow-hidden bg-white ${
+                    isImage ? 'p-0' : `${scalingStyles.wrapperClass} flex items-center justify-center`
+                  }`}
                 >
                   {/* Watermark Overlay */}
                   {watermark && (
@@ -301,8 +340,24 @@ export default function FinalPrintModal({
                   )}
 
                   <div
-                    style={{ transform: scalingStyles.transform }}
-                    className="w-full h-full flex items-center justify-center transition-transform duration-200"
+                    style={{
+                      transform: isImage
+                        ? 'none'
+                        : docConfig?.scaleMode === 'custom'
+                          ? `scale(${Math.max(0.25, Math.min(2.0, (docConfig?.customScale || 100) / 100))}) rotate(${docConfig?.rotation || 0}deg)`
+                          : docConfig?.rotation
+                            ? `${scalingStyles.transform} rotate(${docConfig.rotation}deg)`
+                            : scalingStyles.transform,
+                      padding: !isImage && docConfig?.marginPreset === 'none'
+                        ? '0px'
+                        : !isImage && docConfig?.marginPreset === 'minimum'
+                          ? '6px'
+                          : !isImage && docConfig?.marginPreset === 'custom' && docConfig?.margins
+                            ? `${docConfig.margins.top}px ${docConfig.margins.right}px ${docConfig.margins.bottom}px ${docConfig.margins.left}px`
+                            : undefined,
+                      transition: 'transform 0.15s ease-out, padding 0.15s ease-out',
+                    }}
+                    className="w-full h-full flex items-center justify-center"
                   >
                     {nUp > 1 ? (
                       /* N-Up Multi-Page Grid Simulation */
@@ -337,12 +392,79 @@ export default function FinalPrintModal({
                       </div>
                     ) : isPdf ? (
                       <canvas ref={canvasRef} className="w-full h-full object-contain pointer-events-none" />
-                    ) : isImage && imgUrl ? (
-                      <img
-                        src={imgUrl}
-                        alt="Full Preview"
-                        className={`${scalingStyles.imgClass} transition-all duration-200`}
-                      />
+                    ) : isImage && imgUrl && imageLayout ? (
+                      <div className="relative w-full h-full overflow-hidden select-none">
+                        {imageLayout.gridItems.map((item) => (
+                          <div
+                            key={item.index}
+                            style={{
+                              position: 'absolute',
+                              left: `${item.xPx}px`,
+                              top: `${item.yPx}px`,
+                              width: `${item.wPx}px`,
+                              height: `${item.hPx}px`,
+                            }}
+                            className={`overflow-hidden border border-dashed border-dark-black-900/50 bg-white shadow-xs ${
+                              imageLayout.isOverflow ? 'ring-2 ring-warn-500' : ''
+                            }`}
+                          >
+                            {(() => {
+                              const zoom = (imgConfig?.zoomLevel ?? 100) / 100
+                              const cropX = imgConfig?.cropPositionX ?? 50
+                              const cropY = imgConfig?.cropPositionY ?? 50
+                              const isCover = imgConfig?.fitMode === 'cover'
+                              const hasZoom = zoom !== 1
+                              const rot = (imgConfig?.rotation || 0) % 360
+                              const isRot90 = rot === 90 || rot === 270
+
+                              const imgStyle = isRot90
+                                ? {
+                                    position: 'absolute',
+                                    left: '50%',
+                                    top: '50%',
+                                    width: `${item.hPx}px`,
+                                    height: `${item.wPx}px`,
+                                    transform: `translate(-50%, -50%) rotate(${rot}deg)${hasZoom ? ` scale(${zoom})` : ''}`,
+                                    transformOrigin: 'center center',
+                                    objectPosition: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
+                                  }
+                                : {
+                                    position: 'absolute',
+                                    left: 0,
+                                    top: 0,
+                                    width: '100%',
+                                    height: '100%',
+                                    transform: rot !== 0
+                                      ? `rotate(${rot}deg)${hasZoom ? ` scale(${zoom})` : ''}`
+                                      : hasZoom
+                                        ? `scale(${zoom})`
+                                        : undefined,
+                                    transformOrigin: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
+                                    objectPosition: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
+                                  }
+
+                              return (
+                                <img
+                                  src={imgUrl}
+                                  alt="Full Preview item"
+                                  style={imgStyle}
+                                  className={`pointer-events-none select-none transition-transform duration-75 ${
+                                    isCover ? 'object-cover' : 'object-contain'
+                                  }`}
+                                />
+                              )
+                            })()}
+                            <div className="absolute bottom-1 right-1 pointer-events-none bg-dark-black-900/80 text-white font-geist text-[8px] font-bold px-1 rounded-[2px] leading-tight">
+                              {Math.round(item.wMm)}×{Math.round(item.hMm)}mm
+                            </div>
+                          </div>
+                        ))}
+                        <div className="absolute top-2 left-2 z-20 pointer-events-none">
+                          <span className="font-geist text-[9px] font-bold bg-dark-black-900 text-lime-300 px-2 py-0.5 rounded-[4px] shadow-sm">
+                            {imageLayout.dimensionLabel} · {ALIGNMENT_GRID.find((a) => a.id === imgConfig?.alignment)?.hint || 'Center'}
+                          </span>
+                        </div>
+                      </div>
                     ) : isText ? (
                       <div className="w-full h-full p-6 overflow-hidden flex flex-col justify-between">
                         <div className="border-b border-dark-black-900/10 pb-1.5 mb-3 flex justify-between font-geist text-[9px] text-dark-black-900/50">
@@ -445,8 +567,38 @@ export default function FinalPrintModal({
                 </div>
                 <div className="flex justify-between py-1.5 border-b border-dark-black-900/10">
                   <span className="text-dark-black-900/60">Quality / Scaling</span>
-                  <span className="font-medium text-dark-black-900">{quality} · {scaling}</span>
+                  <span className="font-medium text-dark-black-900">
+                    {quality} · {docConfig?.scaleMode === 'custom' ? `Scale ${docConfig.customScale}%` : scaling}
+                  </span>
                 </div>
+                {!isImage && (
+                  <>
+                    <div className="flex justify-between py-1.5 border-b border-dark-black-900/10">
+                      <span className="text-dark-black-900/60">Pages to print</span>
+                      <span className="font-geist font-medium text-dark-black-900">
+                        {docConfig?.pageRangeMode === 'current'
+                          ? `Page ${activePage} only`
+                          : docConfig?.pageRangeMode === 'custom' && docConfig?.customRange
+                            ? docConfig.customRange
+                            : `All (${totalPages} pages)`}
+                        {docConfig?.pageSubset !== 'all' && ` · ${docConfig.pageSubset === 'odd' ? 'Odd only' : 'Even only'}`}
+                        {docConfig?.reverseOrder && ' (Reverse)'}
+                      </span>
+                    </div>
+                    {docConfig?.rotation !== 0 && (
+                      <div className="flex justify-between py-1.5 border-b border-dark-black-900/10">
+                        <span className="text-dark-black-900/60">Rotation</span>
+                        <span className="font-geist font-medium text-dark-black-900">{docConfig.rotation}°</span>
+                      </div>
+                    )}
+                    {docConfig?.marginPreset !== 'default' && (
+                      <div className="flex justify-between py-1.5 border-b border-dark-black-900/10">
+                        <span className="text-dark-black-900/60">Margin</span>
+                        <span className="font-geist font-medium text-dark-black-900 capitalize">{docConfig.marginPreset}</span>
+                      </div>
+                    )}
+                  </>
+                )}
                 <div className="flex justify-between py-1.5 border-b border-dark-black-900/10">
                   <span className="text-dark-black-900/60">Copies</span>
                   <span className="font-geist font-bold text-dark-black-900">{copies}</span>

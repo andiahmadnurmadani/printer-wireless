@@ -100,10 +100,11 @@ export const IconWifi = ({ size = 18, className = '' }) => (
 
 export const IconUsb = ({ size = 18, className = '' }) => (
   <svg width={size} height={size} {...base} className={className} aria-hidden="true">
-    <path d="M10 2h4v4h-4z" />
-    <path d="M12 6v5" />
-    <rect x="9" y="11" width="6" height="9" rx="1" />
-    <path d="M9 14h6" />
+    <rect x="7" y="2" width="10" height="7" rx="1.5" />
+    <path d="M9 9v5a3 3 0 0 0 6 0V9" />
+    <path d="M12 17v5" />
+    <line x1="10" y1="5" x2="10" y2="5.5" strokeWidth={2.2} />
+    <line x1="14" y1="5" x2="14" y2="5.5" strokeWidth={2.2} />
   </svg>
 )
 
@@ -336,6 +337,100 @@ export const IconInfo = ({ size = 18, className = '' }) => (
   <svg width={size} height={size} {...base} className={className} aria-hidden="true">
     <circle cx="12" cy="12" r="10" />
     <path d="M12 16v-4M12 8h.01" />
+  </svg>
+)
+
+export const IconMove = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <polyline points="5 9 2 12 5 15" />
+    <polyline points="9 5 12 2 15 5" />
+    <polyline points="15 19 12 22 9 19" />
+    <polyline points="19 9 22 12 19 15" />
+    <line x1="2" y1="12" x2="22" y2="12" />
+    <line x1="12" y1="2" x2="12" y2="22" />
+  </svg>
+)
+
+export const IconCrop = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+    <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+  </svg>
+)
+
+export const IconLayoutGrid = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="3" width="7" height="7" rx="1" />
+    <rect x="14" y="3" width="7" height="7" rx="1" />
+    <rect x="14" y="14" width="7" height="7" rx="1" />
+    <rect x="3" y="14" width="7" height="7" rx="1" />
+  </svg>
+)
+
+export const IconMaximize = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+  </svg>
+)
+
+export const IconUnlock = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+  </svg>
+)
+
+export const IconRotateCw = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <polyline points="23 4 23 10 17 10" />
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+)
+
+export const IconSliders = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <line x1="4" y1="21" x2="4" y2="14" />
+    <line x1="4" y1="10" x2="4" y2="3" />
+    <line x1="12" y1="21" x2="12" y2="12" />
+    <line x1="12" y1="8" x2="12" y2="3" />
+    <line x1="20" y1="21" x2="20" y2="16" />
+    <line x1="20" y1="12" x2="20" y2="3" />
+    <line x1="1" y1="14" x2="7" y2="14" />
+    <line x1="9" y1="8" x2="15" y2="8" />
+    <line x1="17" y1="16" x2="23" y2="16" />
+  </svg>
+)
+export const IconMinus = ({ size = 20, className = '' }) => (
+  <svg width={size} height={size} {...base} strokeWidth={2} className={className} aria-hidden="true">
+    <path d="M5 12h14" />
+  </svg>
+)
+
+export const IconZoomIn = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <circle cx="11" cy="11" r="7" />
+    <path d="m21 21-4.3-4.3" />
+    <path d="M11 8v6M8 11h6" />
+  </svg>
+)
+
+export const IconZoomOut = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <circle cx="11" cy="11" r="7" />
+    <path d="m21 21-4.3-4.3" />
+    <path d="M8 11h6" />
+  </svg>
+)
+
+export const IconOrientationPortrait = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="5" y="3" width="14" height="18" rx="2" />
+  </svg>
+)
+
+export const IconOrientationLandscape = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="5" width="18" height="14" rx="2" />
   </svg>
 )
 

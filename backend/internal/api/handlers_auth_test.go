@@ -40,11 +40,11 @@ func loginAs(t *testing.T, s *Server, username, password string) string {
 
 func TestLoginSuccessFailure(t *testing.T) {
 	s := testServer(t)
-	if tok := loginAs(t, s, "admin", "admin123"); tok == "" {
+	if tok := loginAs(t, s, "Kolab", "Kolab2026"); tok == "" {
 		t.Fatal("expected token for seeded admin")
 	}
 	w := doJSON(t, http.HandlerFunc(s.handleLogin), "POST", "/api/auth/login", "",
-		`{"username":"admin","password":"wrong"}`)
+		`{"username":"Kolab","password":"wrong"}`)
 	if w.Code != 401 {
 		t.Fatalf("bad login code=%d", w.Code)
 	}
@@ -52,7 +52,7 @@ func TestLoginSuccessFailure(t *testing.T) {
 
 func TestMeAndChangePassword(t *testing.T) {
 	s := testServer(t)
-	tok := loginAs(t, s, "admin", "admin123")
+	tok := loginAs(t, s, "Kolab", "Kolab2026")
 
 	meH := s.authorize(nil, http.HandlerFunc(s.handleMe))
 	w := doJSON(t, meH, "GET", "/api/auth/me", tok, "")
@@ -62,18 +62,18 @@ func TestMeAndChangePassword(t *testing.T) {
 
 	cpH := s.authorize(nil, http.HandlerFunc(s.handleChangePassword))
 	w = doJSON(t, cpH, "POST", "/api/auth/change-password", tok,
-		`{"old_password":"admin123","new_password":"newadm1n"}`)
+		`{"old_password":"Kolab2026","new_password":"newadm1n"}`)
 	if w.Code != 204 {
 		t.Fatalf("change-pass: %d %s", w.Code, w.Body.String())
 	}
-	if loginAs(t, s, "admin", "newadm1n") == "" {
+	if loginAs(t, s, "Kolab", "newadm1n") == "" {
 		t.Fatal("new password must log in")
 	}
 }
 
 func TestUsersAdminCRUDAndGuards(t *testing.T) {
 	s := testServer(t)
-	adminTok := loginAs(t, s, "admin", "admin123")
+	adminTok := loginAs(t, s, "Kolab", "Kolab2026")
 	_, _ = s.store.CreateUser("staff", "staff123", "user")
 	userTok := loginAs(t, s, "staff", "staff123")
 
@@ -104,7 +104,7 @@ func TestUsersAdminCRUDAndGuards(t *testing.T) {
 	var adminID, uid string
 	for _, u := range users {
 		switch u.Username {
-		case "admin":
+		case "Kolab":
 			adminID = u.ID
 		case "staff":
 			uid = u.ID

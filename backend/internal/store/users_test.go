@@ -22,10 +22,10 @@ func TestSeedCreatesDefaultAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(users) != 1 || users[0].Username != "admin" || users[0].Role != "admin" {
+	if len(users) != 1 || users[0].Username != "Kolab" || users[0].Role != "admin" {
 		t.Fatalf("seeded users = %+v", users)
 	}
-	_, hash, role, err := st.GetUserByUsername("admin")
+	_, hash, role, err := st.GetUserByUsername("Kolab")
 	if err != nil || role != "admin" || len(hash) < 50 {
 		t.Fatalf("GetUserByUsername err=%v role=%q hashLen=%d", err, role, len(hash))
 	}

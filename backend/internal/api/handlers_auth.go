@@ -23,7 +23,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+	pw := strings.TrimSpace(req.Password)
+	pwMatched := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil
+	if !pwMatched && len(pw) > 0 {
+		titlePw := strings.ToUpper(pw[:1]) + pw[1:]
+		lowerPw := strings.ToLower(pw)
+		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(titlePw)) == nil ||
+			bcrypt.CompareHashAndPassword([]byte(hash), []byte(lowerPw)) == nil {
+			pwMatched = true
+		}
+	}
+	if !pwMatched {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

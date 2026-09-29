@@ -88,7 +88,7 @@ export default function LoginModal() {
               autoComplete="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="admin"
+              placeholder="Kolab"
               className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[12px] px-3.5 py-2.5 font-figtree text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
             />
           </label>

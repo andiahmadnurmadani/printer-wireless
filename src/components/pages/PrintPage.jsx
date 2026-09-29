@@ -7,14 +7,17 @@ import Modal from '../ui/Modal'
 import { FileTypeBadge } from '../ui/Badges'
 import {
   IconUpload, IconFile, IconImage, IconTxt, IconCheck, IconPrinter,
-  IconChevronDown, IconEye, IconRefresh, IconAlert, IconWrench, IconDroplet, IconCamera, IconLock,
+  IconChevronDown, IconEye, IconAlert, IconCamera, IconLock,
 } from '../ui/icons'
-import { getPaperDimensions, PAPER_SIZES } from '../../utils/paperDimensions'
+import { getPaperDimensions, paperOption, PAPER_SIZES } from '../../utils/paperDimensions'
 import { loadPdfDocument } from '../../utils/pdfHelper'
+import { DEFAULT_IMAGE_CONFIG, compositeImageToPrintBlob } from '../../utils/imageLayoutHelper'
 import PrintSheetPreview from '../preview/PrintSheetPreview'
 import PageThumbnails from '../preview/PageThumbnails'
 import FinalPrintModal from '../preview/FinalPrintModal'
 import CameraScanModal from '../scanner/CameraScanModal'
+import ImageLayoutControls from '../preview/ImageLayoutControls'
+import DocumentLayoutControls, { DEFAULT_DOC_CONFIG } from '../preview/DocumentLayoutControls'
 
 function Select({ label, value, onChange, options, hint }) {
   return (
@@ -26,11 +29,17 @@ function Select({ label, value, onChange, options, hint }) {
           onChange={(e) => onChange(e.target.value)}
           className="w-full appearance-none border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 pr-10 font-figtree text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors cursor-pointer"
         >
-          {options.map((o) => (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ))}
+          {options.map((o) => {
+            // Options may be plain strings or { value, label } pairs (paper sizes
+            // show their physical dimensions, like a normal print dialog).
+            const val = typeof o === 'object' && o !== null ? o.value : o
+            const text = typeof o === 'object' && o !== null ? o.label || o.value : o
+            return (
+              <option key={val} value={val}>
+                {text}
+              </option>
+            )
+          })}
         </select>
         <IconChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-dark-black-900/60 pointer-events-none" />
       </div>
@@ -87,7 +96,7 @@ function Toggle({ label, desc, hint, checked, onChange, disabled }) {
 
 export default function PrintPage({ onNavigate }) {
   const { isStaff, isAuthenticated, openLoginModal } = useAuth()
-  const { printers, submitJob, defaultPrinter, toast } = useApp()
+  const { printers, submitJob, defaultPrinter, toast, history } = useApp()
   const fileInputRef = useRef(null)
 
   const [submitting, setSubmitting] = useState(false)
@@ -96,7 +105,7 @@ export default function PrintPage({ onNavigate }) {
   const [copies, setCopies] = useState(1)
   const [paperSize, setPaperSize] = useState('A4')
   const [orientation, setOrientation] = useState('Portrait')
-  const [color, setColor] = useState(false)
+  const [color, setColor] = useState(true)
   const [duplex, setDuplex] = useState(false)
   const [range, setRange] = useState('')
   const [quality, setQuality] = useState('Standard')
@@ -107,6 +116,8 @@ export default function PrintPage({ onNavigate }) {
   const [loadingPdf, setLoadingPdf] = useState(false)
   const [finalModalOpen, setFinalModalOpen] = useState(false)
   const [cameraModalOpen, setCameraModalOpen] = useState(false)
+  const [imgConfig, setImgConfig] = useState(DEFAULT_IMAGE_CONFIG)
+  const [docConfig, setDocConfig] = useState(DEFAULT_DOC_CONFIG)
 
   // Domain 2 & 3: Advanced Layout, Imposition, Media & PPD States
   const [nUp, setNUp] = useState(1)
@@ -116,6 +127,7 @@ export default function PrintPage({ onNavigate }) {
   const [borderless, setBorderless] = useState(false)
   const [booklet, setBooklet] = useState(false)
   const [watermark, setWatermark] = useState('')
+  const [printAsImage, setPrintAsImage] = useState(false)
   const [manualDuplex, setManualDuplex] = useState(false)
   const [manualDuplexModalOpen, setManualDuplexModalOpen] = useState(false)
   const [manualDuplexStep, setManualDuplexStep] = useState('odd')
@@ -164,6 +176,8 @@ export default function PrintPage({ onNavigate }) {
       setPageCount(1)
       setCurrentPage(1)
       setIsFlipped(false)
+      setImgConfig(DEFAULT_IMAGE_CONFIG)
+      setDocConfig(DEFAULT_DOC_CONFIG)
       return
     }
 
@@ -178,6 +192,11 @@ export default function PrintPage({ onNavigate }) {
           setPdfDoc(doc)
           setPageCount(doc.numPages)
           setCurrentPage(1)
+          return doc.getPage(1).then((page) => {
+            if (!active) return
+            const vp = page.getViewport({ scale: 1 })
+            setOrientation(vp.width > vp.height ? 'Landscape' : 'Portrait')
+          }).catch(() => {})
         })
         .catch((err) => {
           console.warn('Cannot parse PDF with pdfjs:', err)
@@ -197,6 +216,11 @@ export default function PrintPage({ onNavigate }) {
           setPdfDoc(doc)
           setPageCount(doc.numPages)
           setCurrentPage(1)
+          return doc.getPage(1).then((page) => {
+            if (!active) return
+            const vp = page.getViewport({ scale: 1 })
+            setOrientation(vp.width > vp.height ? 'Landscape' : 'Portrait')
+          }).catch(() => {})
         })
         .catch((err) => {
           console.warn('Cannot convert Office doc for preview:', err)
@@ -207,6 +231,7 @@ export default function PrintPage({ onNavigate }) {
           if (active) setLoadingPdf(false)
         })
     } else if (isText(file.name)) {
+      setOrientation('Portrait')
       const reader = new FileReader()
       reader.onload = (e) => {
         if (!active) return
@@ -220,9 +245,35 @@ export default function PrintPage({ onNavigate }) {
     } else if (isImage(file.name)) {
       setPageCount(1)
       setCurrentPage(1)
+      setColor(true)
+      // Auto-detect image aspect ratio to orient paper automatically
+      const img = new Image()
+      const url = URL.createObjectURL(file)
+      img.onload = () => {
+        if (!active) return
+        URL.revokeObjectURL(url)
+        const isImgLandscape = img.naturalWidth > img.naturalHeight
+        const initialOrient = isImgLandscape ? 'Landscape' : 'Portrait'
+        setOrientation(initialOrient)
+        // Default strictly to Fit Utuh (user can choose Fill to fill entire paper)
+        setImgConfig({
+          ...DEFAULT_IMAGE_CONFIG,
+          sizePreset: 'fit',
+          fitMode: 'contain',
+          zoomLevel: 100,
+          cropPositionX: 50,
+          cropPositionY: 50,
+        })
+        setScaling('Fit to page')
+      }
+      img.onerror = () => {
+        URL.revokeObjectURL(url)
+      }
+      img.src = url
     } else {
       setPageCount(1)
       setCurrentPage(1)
+      setScaling('Fit to page')
     }
 
     return () => {
@@ -244,14 +295,169 @@ export default function PrintPage({ onNavigate }) {
   const effectiveQuality = qualities.includes(quality) ? quality : qualities[0] || 'Standard'
   const effectiveScaling = scalings.includes(scaling) ? scaling : scalings[0] || 'Fit to page'
   const effectiveOrient = orientations.includes(orientation) ? orientation : orientations[0] || 'Portrait'
-  const canColor = !!caps?.color
-  const canDuplex = !!caps?.duplex
-  const effColor = color && canColor
+  const canColor = caps ? !!caps.color : true
+  const canDuplex = caps ? !!caps.duplex : true
+  const effColor = caps ? (color && canColor) : color
+
+  // ── One consistent setting set for every file type ──────────────────────
+  // A normal print dialog (WPS Office, Windows) shows the same options whatever
+  // the document is and only disables the ones that cannot apply. The panel used
+  // to swap entire control sets between PDF and image — Scaling/N-Up for
+  // documents, "Photo Layout" for photos — so the two paths felt like different
+  // applications.
+  const docIsImage = !!file && isImage(file.name)
+  const docIsPaged = !!file && (isPdf(file.name) || isOfficeDoc(file.name) || isText(file.name))
+
+  // Same scaling list for both paths. "Fill page (Crop)" was previously
+  // unreachable from the panel even though the backend always supported it.
+  const scalingOptions = useMemo(() => {
+    const base = ['Fit to page', 'Fill page (Crop)', 'Shrink to fit', 'Actual size']
+    const extra = (caps?.scalings || []).filter((s) => !base.includes(s) && s !== 'Custom')
+    return [...base, ...extra]
+  }, [caps])
+
+  // Images are composited on canvas, so their scaling is expressed by the image
+  // fit mode — keep the shared dropdown in sync with it both ways.
+  const scalingForImages = imgConfig.sizePreset === 'fill' || imgConfig.fitMode === 'cover'
+    ? 'Fill page (Crop)'
+    : imgConfig.sizePreset === 'original'
+      ? 'Actual size'
+      : 'Fit to page'
+
+  const scalingForDocs = docConfig.scaleMode === 'custom'
+    ? 'Custom'
+    : docConfig.scaleMode === 'actual'
+      ? 'Actual size'
+      : docConfig.scaleMode === 'shrink'
+        ? 'Shrink to fit'
+        : docConfig.scaleMode === 'fill'
+          ? 'Fill page (Crop)'
+          : 'Fit to page'
+
+  const effectiveScalingUI = docIsImage
+    ? scalingForImages
+    : docIsPaged && docConfig.scaleMode !== 'fit'
+      ? scalingForDocs
+      : effectiveScaling
+
+  const handleScalingChange = (v) => {
+    if (docIsImage) {
+      const patch = v === 'Fill page (Crop)'
+        ? { sizePreset: 'fill', fitMode: 'cover' }
+        : v === 'Actual size'
+          ? { sizePreset: 'original', fitMode: 'contain' }
+          : { sizePreset: 'fit', fitMode: 'contain' }
+      handleUpdateImgConfig({ ...imgConfig, ...patch })
+      return
+    }
+    if (docIsPaged) {
+      const mode = v === 'Fill page (Crop)'
+        ? 'fill'
+        : v === 'Actual size'
+          ? 'actual'
+          : v === 'Shrink to fit'
+            ? 'shrink'
+            : 'fit'
+      setDocConfig((prev) => ({ ...prev, scaleMode: mode }))
+    }
+    setScaling(v)
+  }
+
+  const effectivePageRange = useMemo(() => {
+    if (!docIsPaged) return range
+    if (docConfig.pageRangeMode === 'current') return String(currentPage)
+    if (docConfig.pageRangeMode === 'custom') return docConfig.customRange
+    if (docConfig.pageSubset === 'odd') return 'odd'
+    if (docConfig.pageSubset === 'even') return 'even'
+    return range
+  }, [docIsPaged, docConfig, currentPage, range])
+
+  // Pages per sheet is shared too: documents use CUPS number-up, photos use the
+  // canvas grid (repeat), so the preview matches the sheet that comes out.
+  const nUpOptions = docIsImage ? [1, 2, 4, 6, 9] : [1, 2, 4, 6, 9, 16]
+  const nUpUI = docIsImage ? (imgConfig.repeat || 1) : nUp
+  const handleNUpChange = (v) => {
+    if (docIsImage) {
+      handleUpdateImgConfig({ ...imgConfig, repeat: v })
+      return
+    }
+    setNUp(v)
+  }
+
+  // Tray choices come from the printer PPD when it has them; otherwise the
+  // selector is hidden entirely (see hasTrayOption).
+  const trayOptions = useMemo(() => {
+    const fromPPD = ppdOptions
+      .filter((o) => /inputslot|tray|media.?source/i.test(o?.name || ''))
+      .flatMap((o) => (Array.isArray(o?.values) ? o.values : []))
+      .filter((v) => /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(String(v)))
+    return fromPPD.length ? ['Auto Select', ...fromPPD] : ['Auto Select']
+  }, [ppdOptions])
+
+  // Printer-specific PPD options that do not duplicate our own controls
+  // (Brightness, Contrast, Saturation, ...). Only the printer's own values are
+  // offered, so nothing invalid can reach the filter chain.
+  const customPPDOptions = useMemo(() => {
+    const handled = /^(pagesize|mediatype|ink|inputslot|media|sides|collate|booklet|print-quality|print-scaling|copies)$/i
+    return ppdOptions.filter((o) => o?.name && !handled.test(o.name) && Array.isArray(o.values) && o.values.length > 0)
+  }, [ppdOptions])
+
+  // Printer-specific PPD option defaults (derived during render — no effect, so
+  // the linter stays happy) plus the operator's overrides.
+  const ppdDefaults = useMemo(() => {
+    const m = {}
+    for (const o of customPPDOptions) {
+      if (o.default) m[o.name] = o.default
+    }
+    return m
+  }, [customPPDOptions])
+  const [ppdOverrides, setPpdOverrides] = useState({})
+  const ppdSettings = useMemo(() => ({ ...ppdDefaults, ...ppdOverrides }), [ppdDefaults, ppdOverrides])
+
+  // Real department usage for the Security & Quota tab, computed from the
+  // history the API already returns (the old card showed a hardcoded "485/500").
+  const deptUsage = useMemo(() => {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+    const acc = {}
+    for (const h of history || []) {
+      if (!h?.createdAt || h.createdAt < monthStart) continue
+      if (h.status === 'cancelled' || h.status === 'failed') continue
+      const key = h.department || 'Engineering'
+      acc[key] = (acc[key] || 0) + Math.max(1, (h.pages || 1) * (h.copies || 1))
+    }
+    return acc
+  }, [history])
+
+  // The tray selector is only real when the printer PPD actually exposes an
+  // InputSlot (the L3210 has none — its old hardcoded list was display text).
+  const hasTrayOption = useMemo(
+    () => ppdOptions.some((o) => /inputslot|tray|media.?source/i.test(o?.name || '')),
+    [ppdOptions],
+  )
 
   // Paper Dimension object (mm, aspect ratio)
   const paperDim = useMemo(() => {
     return getPaperDimensions(effectivePaper, effectiveOrient)
   }, [effectivePaper, effectiveOrient])
+
+  // Handles orientation switching without resetting user fit choice
+  const handleOrientationChange = (nextOrient) => {
+    setOrientation(nextOrient)
+  }
+
+  // Synchronized image layout updater
+  const handleUpdateImgConfig = (updater) => {
+    setImgConfig((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      if (next.fitMode === 'cover' || next.sizePreset === 'fill') {
+        setScaling('Fill (Crop)')
+      } else {
+        setScaling('Fit to page')
+      }
+      return next
+    })
+  }
 
   const fileMeta = (name) => {
     const ext = name.split('.').pop().toUpperCase()
@@ -277,15 +483,7 @@ export default function PrintPage({ onNavigate }) {
     setFile(f)
   }
 
-  // Real-time Cost Estimation (Domain 5 Enterprise Accounting)
-  const estimatedCost = useMemo(() => {
-    const base = effColor ? 1500 : 500
-    let total = Math.max(1, pageCount) * Math.max(1, copies) * base
-    if (duplex || manualDuplex) total = Math.round(total * 0.9) // 10% discount for paper savings
-    return total
-  }, [effColor, pageCount, copies, duplex, manualDuplex])
-
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!isStaff) {
       toast('Guest accounts cannot send print jobs.', 'error')
       return
@@ -325,7 +523,6 @@ export default function PrintPage({ onNavigate }) {
         duplexStep: 'odd',
         secureRelease,
         pin: secureRelease ? pin : '',
-        cost: estimatedCost,
         department,
       }
       submitJob(oddPayload, file).catch((e) => {
@@ -336,10 +533,38 @@ export default function PrintPage({ onNavigate }) {
 
     setSubmitting(true)
 
-    // Capture all values before clearing state
-    const capturedFile = file
+    // Always composite image files through Canvas to ensure exact WYSIWYG placement,
+    // normalize smartphone EXIF rotation/inversion, apply custom crop/zoom, and output a clean JPEG.
+    let capturedFile = file
+    if (isImage(file.name)) {
+      try {
+        const shouldShowMargins = !borderless && imgConfig?.sizePreset !== 'fill'
+        const compositeBlob = await compositeImageToPrintBlob(file, paperDim, imgConfig, shouldShowMargins)
+        capturedFile = new File([compositeBlob], `kroomprint_${file.name.replace(/\.[^.]+$/, '')}.jpg`, { type: 'image/jpeg' })
+      } catch (err) {
+        console.warn('Canvas compositing fallback to original:', err)
+      }
+    }
+
+    // Images are composited on canvas from the shared Scaling choice, so map it
+    // back to the backend's scaling vocabulary instead of forcing a value.
+    const isCover = imgConfig?.fitMode === 'cover' || imgConfig?.sizePreset === 'fill'
+    const computedDocScaling = docConfig.scaleMode === 'custom'
+      ? 'Custom'
+      : docConfig.scaleMode === 'actual'
+        ? 'Actual size'
+        : docConfig.scaleMode === 'shrink'
+          ? 'Shrink to fit'
+          : docConfig.scaleMode === 'fill'
+            ? 'Fill page (Crop)'
+            : 'Fit to page'
+
+    const jobScaling = docIsImage
+      ? (isCover ? 'Fill page (Crop)' : imgConfig?.sizePreset === 'original' ? 'Actual size' : 'Fit to page')
+      : computedDocScaling
+
     const jobPayload = {
-      fileType: file.name.split('.').pop()?.toUpperCase() || 'PDF',
+      fileType: capturedFile.name.split('.').pop()?.toUpperCase() || 'JPG',
       pages: pageCount,
       copies,
       color: effColor,
@@ -347,23 +572,32 @@ export default function PrintPage({ onNavigate }) {
       paperSize: effectivePaper,
       orientation: effectiveOrient,
       quality: effectiveQuality,
-      scaling: effectiveScaling,
-      pageRange: range,
+      scaling: jobScaling,
+      pageRange: docIsPaged ? effectivePageRange : range,
       priority: 3,
       printerId: selectedPrinter?.id || printerId,
-      size: file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`,
-      nUp,
+      size: capturedFile.size >= 1048576 ? `${(capturedFile.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(capturedFile.size / 1024))} KB`,
+      // Photos already carry their grid from the canvas compositing step, so the
+      // printer must NOT impose a second number-up on the same sheet.
+      nUp: docIsImage ? 1 : nUp,
       collate,
       mediaType,
       inputTray,
       borderless,
       booklet,
       watermark,
+      printAsImage,
+      ppdSettings,
       manualDuplex: false,
       secureRelease,
       pin: secureRelease ? pin : '',
-      cost: estimatedCost,
       department,
+      rotation: docIsPaged ? docConfig.rotation : (imgConfig?.rotation || 0),
+      scalePercent: docIsPaged && docConfig.scaleMode === 'custom' ? docConfig.customScale : 100,
+      duplexMode: docIsPaged ? docConfig.duplexMode : 'long',
+      reverseOrder: docIsPaged ? docConfig.reverseOrder : false,
+      marginPreset: docIsPaged ? docConfig.marginPreset : (borderless ? 'none' : 'default'),
+      margins: docIsPaged ? docConfig.margins : undefined,
     }
 
     // Optimistic reset + navigate BEFORE the network call — feels instant
@@ -586,6 +820,12 @@ export default function PrintPage({ onNavigate }) {
                 onOpenFinalModal={() => setFinalModalOpen(true)}
                 isFlipped={isFlipped}
                 onToggleFlip={() => setIsFlipped(!isFlipped)}
+                imgConfig={imgConfig}
+                onUpdateImgConfig={handleUpdateImgConfig}
+                docConfig={docConfig}
+                onUpdateDocConfig={(patch) => setDocConfig((prev) => ({ ...prev, ...patch }))}
+                onSetOrientation={handleOrientationChange}
+                orientations={orientations}
               />
 
               {/* ── Page Thumbnails Strip ── */}
@@ -691,7 +931,6 @@ export default function PrintPage({ onNavigate }) {
             <div className="flex border-b-2 border-dark-black-900/15 mb-5 gap-1 overflow-x-auto pb-1">
               {[
                 { id: 'basic', label: 'Basic' },
-                { id: 'layout', label: 'Layout (N-Up)' },
                 { id: 'media', label: 'Paper & Tray' },
                 { id: 'watermark', label: 'Watermark' },
                 { id: 'security', label: 'Security & Quota' },
@@ -719,7 +958,7 @@ export default function PrintPage({ onNavigate }) {
                     label="Paper Size"
                     value={effectivePaper}
                     onChange={(v) => setPaperSize(v)}
-                    options={paperSizes}
+                    options={paperSizes.map(paperOption)}
                     hint={`${paperDim.widthMm} × ${paperDim.heightMm} mm`}
                   />
                   <Select
@@ -728,62 +967,43 @@ export default function PrintPage({ onNavigate }) {
                     onChange={(v) => setQuality(v)}
                     options={qualities}
                   />
-                  <Select
-                    label="Scaling"
-                    value={effectiveScaling}
-                    onChange={(v) => setScaling(v)}
-                    options={scalings}
-                  />
+                  {/* Scaling is shown for image or unselected file; for documents, DocumentLayoutControls provides full scaling */}
+                  {(!file || isImage(file.name)) && (
+                    <Select
+                      label="Scaling"
+                      value={effectiveScalingUI}
+                      onChange={handleScalingChange}
+                      options={scalingOptions}
+                      hint={docIsImage ? 'Foto: Fit = utuh proporsional, Fill = penuh kertas' : undefined}
+                    />
+                  )}
 
-                  {/* Orientation Switcher */}
-                  <div className="flex flex-col gap-1.5">
-                    <span className="font-figtree text-[13px] font-medium text-dark-black-900">Orientation</span>
-                    <div className="flex gap-2">
-                      {orientations.map((o) => (
-                        <button
-                          key={o}
-                          type="button"
-                          onClick={() => setOrientation(o)}
-                          className={`flex-1 px-3 py-2.5 rounded-[11px] border-2 font-figtree text-[13.5px] font-semibold transition-all cursor-pointer ${
-                            effectiveOrient === o
-                              ? 'border-dark-black-900 bg-dark-black-900 text-vanilla-100 shadow-[2px_2px_0_0_rgba(56,56,56,1)]'
-                              : 'border-dark-black-900/25 bg-vanilla-100 hover:border-dark-black-900 text-dark-black-900'
-                          }`}
-                        >
-                          {o}
-                        </button>
-                      ))}
+                  {/* Orientation Switcher — only shown for image or unselected file; for documents, DocumentLayoutControls provides WPS Office orientation & rotation */}
+                  {(!file || isImage(file.name)) && (
+                    <div className="flex flex-col gap-1.5">
+                      <span className="font-figtree text-[13px] font-medium text-dark-black-900">Orientation</span>
+                      <div className="flex gap-2">
+                        {orientations.map((o) => (
+                          <button
+                            key={o}
+                            type="button"
+                            onClick={() => handleOrientationChange(o)}
+                            className={`flex-1 px-3 py-2.5 rounded-[11px] border-2 font-figtree text-[13.5px] font-semibold transition-all cursor-pointer ${
+                              effectiveOrient === o
+                                ? 'border-dark-black-900 bg-dark-black-900 text-vanilla-100 shadow-[2px_2px_0_0_rgba(56,56,56,1)]'
+                                : 'border-dark-black-900/25 bg-vanilla-100 hover:border-dark-black-900 text-dark-black-900'
+                            }`}
+                          >
+                            {o}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* Copies & Page Range */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="font-figtree text-[13px] font-medium text-dark-black-900">Copies</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="999"
-                      value={copies}
-                      onChange={(e) => setCopies(Math.max(1, Math.min(999, parseInt(e.target.value) || 1)))}
-                      className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 font-geist font-bold text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="font-figtree text-[13px] font-medium text-dark-black-900">Page Range</span>
-                    <input
-                      type="text"
-                      value={range}
-                      onChange={(e) => setRange(e.target.value)}
-                      placeholder="e.g. 1-5, 8, 11-13"
-                      className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 font-geist text-[13px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
-                    />
-                  </label>
+                  )}
                 </div>
 
                 {/* Color & Hardware Duplex Toggles */}
-                <div className="border-t-2 border-dark-black-900/15 pt-2 flex flex-col divide-y divide-dark-black-900/10">
+                <div className="p-3.5 bg-vanilla-100 rounded-[14px] border-2 border-dark-black-900 flex flex-col divide-y divide-dark-black-900/10">
                   <div className={!canColor ? 'opacity-45 pointer-events-none select-none' : ''}>
                     <Toggle
                       label="Print in Color"
@@ -792,88 +1012,89 @@ export default function PrintPage({ onNavigate }) {
                       onChange={setColor}
                     />
                   </div>
-                  <div className={!canDuplex ? 'opacity-45 pointer-events-none select-none' : ''}>
-                    <Toggle
-                      label="Hardware Two-Sided (Duplex)"
-                      desc={canDuplex ? 'Automatic hardware duplex on supported printer' : 'Printer does not support hardware duplex'}
-                      checked={duplex && canDuplex}
-                      onChange={setDuplex}
-                    />
-                  </div>
+                  {(!file || isImage(file.name)) && (
+                    <div className={!canDuplex ? 'opacity-45 pointer-events-none select-none' : ''}>
+                      <Toggle
+                        label="Hardware Two-Sided (Duplex)"
+                        desc={canDuplex ? 'Automatic hardware duplex on supported printer' : 'Printer does not support hardware duplex'}
+                        checked={duplex && canDuplex}
+                        onChange={setDuplex}
+                      />
+                    </div>
+                  )}
+                  <Toggle
+                    label="Print as Image (Rasterize)"
+                    desc="Render dokumen jadi gambar dulu — penolong kalau font/vektor PDF bikin hasil aneh"
+                    checked={printAsImage}
+                    onChange={setPrintAsImage}
+                  />
                 </div>
+
+                {/* Copies & Page Range (only shown for image or unselected; for documents, DocumentLayoutControls provides full WPS Office Salinan & Rentang Halaman) */}
+                {(!file || isImage(file.name)) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <label className="flex flex-col gap-1.5">
+                      <span className="font-figtree text-[13px] font-medium text-dark-black-900">Copies (Salinan)</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        value={copies}
+                        onChange={(e) => setCopies(Math.max(1, Math.min(999, parseInt(e.target.value) || 1)))}
+                        className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 font-geist font-bold text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="font-figtree text-[13px] font-medium text-dark-black-900">Page Range</span>
+                      <input
+                        type="text"
+                        value={range}
+                        onChange={(e) => setRange(e.target.value)}
+                        placeholder="— (satu gambar)"
+                        disabled
+                        className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 font-geist text-[13px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30 disabled:opacity-50"
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {/* ── Photo Layout & Sizing Card (for image printing) ── */}
+                {file && isImage(file.name) && (
+                  <ImageLayoutControls
+                    config={imgConfig}
+                    onChange={handleUpdateImgConfig}
+                    onChangePaperSize={(size) => setPaperSize(size)}
+                    currentPaperSize={effectivePaper}
+                    paperDim={paperDim}
+                  />
+                )}
+
+                {/* ── Document Page Handling & Layout Card (for PDF & documents — WPS Office Style) ── */}
+                {file && !isImage(file.name) && (
+                  <DocumentLayoutControls
+                    config={docConfig}
+                    onChange={setDocConfig}
+                    totalPages={pageCount}
+                    currentPage={currentPage}
+                    paperDim={paperDim}
+                    canDuplex={canDuplex}
+                    duplex={duplex}
+                    onToggleDuplex={setDuplex}
+                    manualDuplex={manualDuplex}
+                    onToggleManualDuplex={setManualDuplex}
+                    copies={copies}
+                    onChangeCopies={setCopies}
+                    collate={collate}
+                    onChangeCollate={setCollate}
+                    nUp={nUp}
+                    onChangeNUp={handleNUpChange}
+                    orientation={effectiveOrient}
+                    onChangeOrientation={handleOrientationChange}
+                  />
+                )}
               </div>
             )}
 
-            {/* Tab 2: Advanced Layout & Imposition */}
-            {activeTab === 'layout' && (
-              <div className="flex flex-col gap-4">
-                {/* N-Up Multi-Page Selector */}
-                <div className="flex flex-col gap-2">
-                  <div className="flex justify-between items-center">
-                    <span className="font-figtree text-[13px] font-bold text-dark-black-900">
-                      N-Up (Pages per Sheet)
-                    </span>
-                    <span className="font-geist text-[12px] font-bold text-dark-black-900 bg-lime-300 px-2 py-0.5 rounded-[6px] border border-dark-black-900/30">
-                      {nUp === 1 ? '1 Page/Sheet (Normal)' : `${nUp}-Up Multi Page`}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { val: 1, label: '1 (Single)' },
-                      { val: 2, label: '2-Up' },
-                      { val: 4, label: '4-Up (2×2)' },
-                      { val: 6, label: '6-Up' },
-                      { val: 9, label: '9-Up (3×3)' },
-                      { val: 16, label: '16-Up' },
-                    ].map((item) => (
-                      <button
-                        key={item.val}
-                        type="button"
-                        onClick={() => setNUp(item.val)}
-                        className={`py-2 px-1 rounded-[10px] border-2 font-figtree text-[12.5px] font-bold transition-all cursor-pointer text-center ${
-                          nUp === item.val
-                            ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-[2px_2px_0_0_rgba(56,56,56,1)]'
-                            : 'border-dark-black-900/25 bg-vanilla-100 hover:border-dark-black-900 text-dark-black-900'
-                        }`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="border-t-2 border-dark-black-900/15 pt-2 flex flex-col divide-y divide-dark-black-900/10">
-                  {/* Manual Duplex Assistant */}
-                  <Toggle
-                    label="Manual Duplex Assistant (Ganjil-Genap)"
-                    desc="Mencetak bolak-balik interaktif untuk printer single-sided seperti Epson L3210"
-                    checked={manualDuplex}
-                    onChange={setManualDuplex}
-                  />
-                  {/* Collate Switch */}
-                  <Toggle
-                    label="Collate Copies (Urutkan Berkas)"
-                    desc={collate ? '1, 2, 3... lalu 1, 2, 3... (Tersusun rapi per rangkap)' : '1, 1... 2, 2... 3, 3... (Berkelompok per halaman)'}
-                    checked={collate}
-                    onChange={setCollate}
-                  />
-                  {/* Borderless Photo Toggle */}
-                  <Toggle
-                    label="Borderless Photo Mode"
-                    desc="Mencetak foto full bleed tanpa tepi putih pada kertas foto"
-                    checked={borderless}
-                    onChange={setBorderless}
-                  />
-                  {/* Booklet Mode */}
-                  <Toggle
-                    label="Booklet Printing (Buku Lipat)"
-                    desc="Imposisi halaman lipat tengah (saddle-stitch booklet)"
-                    checked={booklet}
-                    onChange={setBooklet}
-                  />
-                </div>
-              </div>
-            )}
 
             {/* Tab 3: Media & Input Tray */}
             {activeTab === 'media' && (
@@ -894,23 +1115,47 @@ export default function PrintPage({ onNavigate }) {
                   hint="Pilih jenis media yang sesuai untuk kalibrasi densitas tinta"
                 />
 
-                <Select
-                  label="Input Paper Slot / Tray"
-                  value={inputTray}
-                  onChange={(v) => setInputTray(v)}
-                  options={[
-                    'Auto Select',
-                    'Main Cassette / Tray 1',
-                    'Rear Manual Feed Slot',
-                  ]}
-                  hint="Sumber baki kertas fisik pada printer tujuan"
-                />
+                {hasTrayOption ? (
+                  <Select
+                    label="Input Paper Slot / Tray"
+                    value={inputTray}
+                    onChange={(v) => setInputTray(v)}
+                    options={trayOptions}
+                    hint="Sumber baki kertas fisik pada printer tujuan"
+                  />
+                ) : (
+                  <div className="p-3 rounded-[12px] bg-vanilla-100 border border-dark-black-900/20 text-[12px] font-figtree text-dark-black-900/60">
+                    Printer ini tidak punya pilihan baki (InputSlot) pada PPD-nya — kertas diambil dari baki utama.
+                  </div>
+                )}
+
+                {customPPDOptions.length > 0 && (
+                  <div className="mt-2 p-3.5 bg-vanilla-100 rounded-[12px] border-2 border-dark-black-900/25 flex flex-col gap-3">
+                    <span className="font-figtree text-[12.5px] font-bold text-dark-black-900">
+                      Opsi Driver Printer (dari PPD)
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {customPPDOptions.map((opt) => (
+                        <Select
+                          key={opt.name}
+                          label={opt.label || opt.name}
+                          value={ppdSettings[opt.name] || opt.default || opt.values[0]}
+                          onChange={(v) => setPpdOverrides((prev) => ({ ...prev, [opt.name]: v }))}
+                          options={opt.values}
+                        />
+                      ))}
+                    </div>
+                    <span className="text-[11px] font-figtree text-dark-black-900/50">
+                      Nilai diambil langsung dari PPD printer ini, jadi semuanya valid untuk driver.
+                    </span>
+                  </div>
+                )}
 
                 {ppdOptions.length > 0 && (
                   <div className="mt-2 p-3 rounded-[12px] bg-vanilla-100 border border-dark-black-900/20 text-[12px] font-geist">
                     <span className="font-bold text-dark-black-900">Introspected CUPS PPD Driver:</span>
                     <div className="text-[11px] text-dark-black-900/70 mt-1">
-                      {ppdOptions.map((opt) => opt.name).slice(0, 6).join(' · ')}
+                      {ppdOptions.map((opt) => opt.name).join(' · ')}
                     </div>
                   </div>
                 )}
@@ -1010,11 +1255,13 @@ export default function PrintPage({ onNavigate }) {
 
                 <div className="p-3 bg-vanilla-100 border border-dark-black-900/20 rounded-[12px] flex items-center justify-between text-[12.5px] font-figtree">
                   <div>
-                    <span className="text-dark-black-900/60 block">Monthly Department Quota:</span>
-                    <span className="font-geist font-bold text-dark-black-900">485 / 500 pages remaining</span>
+                    <span className="text-dark-black-900/60 block">Halaman tercetak bulan ini — {department}:</span>
+                    <span className="font-geist font-bold text-dark-black-900">
+                      {deptUsage[department] || 0} halaman
+                    </span>
                   </div>
-                  <span className="px-2.5 py-1 rounded-[8px] bg-ok-100 border border-ok-500 text-ok-700 font-bold text-[11px]">
-                    Quota OK
+                  <span className="px-2.5 py-1 rounded-[8px] bg-vanilla-300 border border-dark-black-900/30 text-dark-black-900/70 font-bold text-[11px]">
+                    dari riwayat cetak
                   </span>
                 </div>
               </div>
@@ -1034,12 +1281,7 @@ export default function PrintPage({ onNavigate }) {
                   {effectivePaper} · {nUp > 1 ? `${nUp}-Up` : '1-Up'} · {effColor ? 'Color' : 'Grayscale'}
                 </span>
               </div>
-              <div className="flex justify-between items-center text-[12.5px] font-figtree pt-1 border-t border-dark-black-900/10">
-                <span className="text-dark-black-900/60">Estimated Cost:</span>
-                <span className="font-geist font-bold text-dark-black-900">
-                  Rp {estimatedCost.toLocaleString('id-ID')}
-                </span>
-              </div>
+
               {secureRelease && (
                 <div className="flex justify-between items-center text-[12px] font-figtree text-dark-black-900 bg-warn-100 px-2 py-1 rounded-[6px] border border-warn-500/40">
                   <span className="inline-flex items-center gap-1 font-bold">
@@ -1114,6 +1356,8 @@ export default function PrintPage({ onNavigate }) {
         watermark={watermark}
         selectedPrinter={selectedPrinter}
         onSubmitJob={handleSubmit}
+        imgConfig={imgConfig}
+        docConfig={docConfig}
       />
 
       {/* ── Interactive Manual Duplex Guidance Modal ── */}

@@ -19,9 +19,9 @@ const printerIcons = [
 ]
 
 const CONN_META = {
-  Network: { icon: <IconWifi size={14} />, label: 'Network' },
-  WiFi: { icon: <IconWifi size={14} />, label: 'WiFi' },
-  USB: { icon: <IconUsb size={14} />, label: 'USB' },
+  Network: { icon: <IconWifi size={15} />, label: 'Network' },
+  WiFi: { icon: <IconWifi size={15} />, label: 'WiFi' },
+  USB: { icon: <IconUsb size={15} />, label: 'USB Direct' },
 }
 
 export default function PrintersPage() {
@@ -227,11 +227,11 @@ export default function PrintersPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {filtered.map((p) => {
             const icon = printerIcons.find((i) => i.label === p.brand) || printerIcons[printerIcons.length - 1]
-            const conn = CONN_META[p.connection] || CONN_META.Network
+            const isUsb = p.connection === 'USB' || p.address?.startsWith('usb://')
+            const conn = isUsb ? CONN_META.USB : (CONN_META[p.connection] || CONN_META.Network)
+            const addressDisplay = isUsb ? 'Local Port' : (p.address || 'Local')
             return (
-              <div key={p.id} className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[20px] p-5 flex flex-col gap-4 hover:shadow-lg transition-shadow">
-                <div className="absolute -top-[9px] -left-[9px] w-[18px] h-[18px] border border-dark-black-900 bg-lime-300 rounded-[2px] pointer-events-none" />
-
+              <div key={p.id} className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[20px] p-5 flex flex-col gap-4 shadow-[3px_3px_0_0_rgba(56,56,56,1)] hover:shadow-[5px_5px_0_0_rgba(56,56,56,1)] hover:-translate-y-0.5 transition-all">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className={`w-12 h-12 rounded-[14px] border-2 border-dark-black-900 ${icon.bg} flex items-center justify-center text-dark-black-900 shrink-0 relative`}>
@@ -253,9 +253,9 @@ export default function PrintersPage() {
                 </div>
 
                 {/* Connection line */}
-                <div className="flex items-center gap-2 text-dark-black-900/55 font-figtree text-[12.5px]">
+                <div className="flex items-center gap-2 text-dark-black-900/60 font-figtree text-[12.5px]">
                   {conn.icon}
-                  <span className="font-geist text-[11.5px]">{conn.label} · {p.address}</span>
+                  <span className="font-geist text-[12px] font-semibold">{conn.label} · {addressDisplay}</span>
                 </div>
 
                 {/* Capability badges & sensor alerts */}
@@ -515,21 +515,27 @@ export default function PrintersPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {[
-                { label: 'Connection', value: detail.connection },
-                { label: 'Address', value: detail.address },
-                { label: 'MAC address', value: detail.mac || '—' },
-                { label: 'Speed', value: detail.speed || '—' },
-                { label: 'Duplex', value: detail.caps?.duplex ? 'Supported' : 'Not supported' },
-                { label: 'Color', value: detail.caps?.color ? 'Color printer' : 'Monochrome' },
-              ].map((row) => (
-                <div key={row.label} className="flex items-center gap-3 p-3 rounded-[12px] border border-dark-black-900/20 bg-vanilla-100">
-                  <div className="min-w-0">
-                    <div className="font-figtree text-[11px] font-medium text-dark-black-900/50 uppercase tracking-wide">{row.label}</div>
-                    <div className="font-geist text-[12.5px] text-dark-black-900 truncate">{row.value}</div>
+              {(() => {
+                const isUsb = detail.connection === 'USB' || detail.address?.startsWith('usb://')
+                const serialMatch = detail.address?.match(/[?&]serial=([^&]+)/)
+                const serial = serialMatch ? serialMatch[1] : null
+                return [
+                  { label: 'Connection', value: isUsb ? 'USB Direct' : detail.connection },
+                  { label: 'Address / Port', value: isUsb ? 'Local Port (Direct USB)' : detail.address },
+                  ...(serial ? [{ label: 'Serial Number', value: serial }] : []),
+                  { label: 'MAC address', value: detail.mac || '—' },
+                  { label: 'Speed', value: detail.speed || '—' },
+                  { label: 'Duplex', value: detail.caps?.duplex ? 'Supported' : 'Not supported' },
+                  { label: 'Color', value: detail.caps?.color ? 'Color printer' : 'Monochrome' },
+                ].map((row) => (
+                  <div key={row.label} className="flex items-center gap-3 p-3 rounded-[12px] border border-dark-black-900/20 bg-vanilla-100">
+                    <div className="min-w-0">
+                      <div className="font-figtree text-[11px] font-medium text-dark-black-900/50 uppercase tracking-wide">{row.label}</div>
+                      <div className="font-geist text-[12.5px] text-dark-black-900 truncate">{row.value}</div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              })()}
             </div>
 
             {/* Capabilities */}
@@ -597,17 +603,22 @@ export default function PrintersPage() {
                 </div>
               </div>
 
-              <div className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-[10px] border border-dark-black-900 bg-vanilla-300 flex items-center justify-center text-dark-black-900 shrink-0">
-                  <IconWifi size={20} />
-                </div>
-                <div>
-                  <div className="font-figtree text-[11px] font-bold text-dark-black-900/50 uppercase tracking-wider">Interface</div>
-                  <div className="font-geist font-semibold text-[13px] text-dark-black-900 truncate">
-                    {maintPrinter.connection} · {maintPrinter.address}
+              {(() => {
+                const isUsb = maintPrinter.connection === 'USB' || maintPrinter.address?.startsWith('usb://')
+                return (
+                  <div className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-[10px] border border-dark-black-900 bg-vanilla-300 flex items-center justify-center text-dark-black-900 shrink-0">
+                      {isUsb ? <IconUsb size={20} /> : <IconWifi size={20} />}
+                    </div>
+                    <div>
+                      <div className="font-figtree text-[11px] font-bold text-dark-black-900/50 uppercase tracking-wider">Interface</div>
+                      <div className="font-geist font-semibold text-[13px] text-dark-black-900 truncate">
+                        {isUsb ? 'USB Direct · Local Port' : `${maintPrinter.connection} · ${maintPrinter.address}`}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                )
+              })()}
 
               <div className="p-3.5 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex items-center gap-3">
                 <div className="w-10 h-10 rounded-[10px] border border-dark-black-900 bg-vanilla-300 flex items-center justify-center text-dark-black-900 shrink-0">
@@ -772,7 +783,7 @@ export default function PrintersPage() {
                 <div className="min-w-0 flex-1">
                   <div className="font-figtree font-semibold text-[14px] text-dark-black-900 truncate">{d.name}</div>
                   <div className="font-geist text-[11.5px] text-dark-black-900/50">
-                    {d.connection} · {d.address} · {d.caps?.color ? 'Color' : 'Mono'} {d.caps?.duplex ? '· Duplex' : ''}
+                    {(d.connection === 'USB' || d.address?.startsWith('usb://')) ? 'USB Direct · Local Port' : `${d.connection} · ${d.address}`} · {d.caps?.color ? 'Color' : 'Mono'} {d.caps?.duplex ? '· Duplex' : ''}
                   </div>
                 </div>
                 <Button variant="lime" size="sm" onClick={() => handleAddDiscovered(d)} icon={<IconPlus size={14} />}>Add</Button>

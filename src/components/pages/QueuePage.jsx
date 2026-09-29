@@ -601,7 +601,6 @@ export default function QueuePage() {
                 { label: 'Color', value: detail.color ? 'Color' : 'Grayscale' },
                 { label: 'Duplex', value: detail.duplex ? 'Two-sided' : 'Single-sided' },
                 { label: 'Department', value: detail.department || 'Engineering' },
-                { label: 'Cost', value: `Rp ${(detail.cost || 0).toLocaleString('id-ID')}` },
                 { label: 'File size', value: detail.size || '—' },
                 { label: 'Priority', value: priorityMeta[detail.priority]?.label || 'Normal' },
               ].map((row) => (

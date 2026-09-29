@@ -26,7 +26,7 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
 - **Binary Permissions:** File binary di NAS wajib memiliki izin `chmod 755` agar dapat dieksekusi oleh user `amba` melalui NFS mount.
 - **Fungsi Utama:** Menerima file upload dari frontend, melakukan konversi/pemrosesan (Go backend), dan mendispatch print job ke daemon lokal CUPS via native IPP & fallback `lp`.
 - **SQLite produksi:** `/home/amba/kroomprint-data/kroomprint.db` (disk LOKAL amba — WAJIB; SQLite di mount NAS menyebabkan segfault/lock contention). Driver `modernc.org/sqlite` dikonfigurasi dengan `SetMaxOpenConns(1)` + PRAGMA WAL/busy_timeout.
-- **Auth:** RBAC multi-role aktif (admin/user/guest). Publik penuh: `GET /api/health` & `POST /api/auth/login`. Guest read-only via `optAuth` (baca printers/jobs/history/settings, SSE, diagnostics). Mutasi cetak wajib staff (`admin`/`user`): `POST /api/jobs`, cancel/pause/resume/retry/release, test-print, `PUT /api/settings`. Admin eksklusif: kelola printer/users/discovery, reset data, test-cups, clear history, `/uploads`. Token HMAC-SHA256 12-jam. Seed default: `admin/admin123`.
+- **Auth:** RBAC multi-role aktif (admin/user/guest). Publik penuh: `GET /api/health` & `POST /api/auth/login`. Guest read-only via `optAuth` (baca printers/jobs/history/settings, SSE, diagnostics). Mutasi cetak wajib staff (`admin`/`user`): `POST /api/jobs`, cancel/pause/resume/retry/release, test-print, `PUT /api/settings`. Admin eksklusif: kelola printer/users/discovery, reset data, test-cups, clear history, `/uploads`. Token HMAC-SHA256 12-jam. Seed default: `Kolab/Kolab2026`.
 
 ### Minibox / Kroombox (Browser E2E / UI Automation)
 - **Minibox Host:** ZeroTier `100.90.80.95:22` (user `minibox`, pass `kolab777`)

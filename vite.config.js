@@ -6,6 +6,14 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    port: 5174,
+    host: true,
+    proxy: {
+      '/api': {
+        target: 'http://100.90.80.85:8088',
+        changeOrigin: true,
+      },
+    },
     watch: {
       // Abaikan folder backend (SQLite DB ditulis scheduler tiap 2.5s,
       // uploads, dan build output) agar tidak memicu full page reload.

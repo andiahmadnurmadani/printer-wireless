@@ -182,19 +182,19 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 		flags = append(flags, fmt.Sprintf("document-format=%s", opts.FileType))
 	}
 	if opts.Quality != "" {
-		switch strings.ToLower(opts.Quality) {
-		case "draft":
-			flags = append(flags, "print-quality=3", "MediaType=PLAIN_NORMAL")
-		case "high":
-			flags = append(flags, "print-quality=5", "MediaType=PLAIN_HIGH")
-		case "photo":
-			flags = append(flags, "print-quality=5", "MediaType=PMPHOTO_HIGH")
+		// Quality maps to print-quality ONLY. It used to also overwrite
+		// MediaType, which silently discarded the paper type chosen in the panel
+		// and disagreed with the IPP path.
+		lower := strings.ToLower(opts.Quality)
+		switch {
+		case lower == "draft":
+			flags = append(flags, "print-quality=3")
+		case lower == "high" || lower == "photo" || lower == "best":
+			flags = append(flags, "print-quality=5")
+		case strings.Contains(lower, "dpi") || strings.Contains(opts.Quality, "x"):
+			flags = append(flags, fmt.Sprintf("Resolution=%q", opts.Quality))
 		default:
-			if strings.Contains(strings.ToLower(opts.Quality), "dpi") || strings.Contains(opts.Quality, "x") {
-				flags = append(flags, fmt.Sprintf("Resolution=%q", opts.Quality))
-			} else {
-				flags = append(flags, fmt.Sprintf("print-quality=%s", qualityToIPP(opts.Quality)))
-			}
+			flags = append(flags, fmt.Sprintf("print-quality=%s", qualityToIPP(opts.Quality)))
 		}
 	}
 	if opts.Copies > 1 {
@@ -208,14 +208,23 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 	} else if opts.Copies > 1 {
 		flags = append(flags, "Collate=False")
 	}
-	if opts.MediaType != "" {
-		flags = append(flags, fmt.Sprintf("MediaType=%s", opts.MediaType))
+	// Only PPD-native MediaType keywords may reach the filter chain; UI labels
+	// like "Plain Paper (Standard)" crash the Epson ESC/P-R filter.
+	if mt := NormalizeMediaTypePPD(opts.MediaType); mt != "" {
+		flags = append(flags, fmt.Sprintf("MediaType=%s", mt))
 	}
-	if opts.InputTray != "" && opts.InputTray != "Auto Select" {
-		flags = append(flags, fmt.Sprintf("InputSlot=%s", opts.InputTray))
+	// Only a PPD-native InputSlot keyword may be sent; the panel's tray labels
+	// ("Main Cassette / Tray 1") are display strings and break the filter chain.
+	if slot := NormalizeInputSlotPPD(opts.InputTray); slot != "" {
+		flags = append(flags, fmt.Sprintf("InputSlot=%s", slot))
 	}
 	if opts.Borderless {
-		flags = append(flags, "PageSize="+normalizeMediaPPD(opts.Media)+".Borderless")
+		// The PPD only has borderless variants for 4x6 / 4x7 / 3.5x5 / postcard.
+		// A made-up "A4.Borderless" is not a PPD choice: CUPS drops back to the
+		// printer default paper while the panel still claims borderless.
+		if bPPD := BorderlessPPDName(opts.Media); bPPD != "" {
+			flags = append(flags, "PageSize="+bPPD, "media="+bPPD)
+		}
 	}
 	if opts.Booklet {
 		flags = append(flags, "booklet=true")
@@ -229,7 +238,14 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 	}
 	if opts.PageRange != "" {
 		// lp -P accepts CUPS page-ranges format: "1", "1-5", "1,3,5-7"
-		flags = append(flags, fmt.Sprintf("page-ranges=%s", normalizePageRange(opts.PageRange)))
+		flags = append(flags, fmt.Sprintf("page-ranges=%s", NormalizePageRange(opts.PageRange)))
+	}
+	if opts.Orientation != "" {
+		if strings.EqualFold(opts.Orientation, "landscape") {
+			flags = append(flags, "orientation-requested=4", "landscape")
+		} else {
+			flags = append(flags, "orientation-requested=3", "portrait")
+		}
 	}
 	jobName := opts.JobName
 	if jobName == "" {
@@ -261,40 +277,17 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 	return jobID, nil
 }
 
-// normalizeMediaPPD maps UI media labels to PPD-native PageSize names used by `lp -o media=`.
-// Epson L3210 PPD uses short names: "A4", "A5", "Letter", "Legal", etc.
-// Do NOT use IPP long-form names like "iso_a4_210x297mm" — those are not recognized by the PPD.
+// normalizeMediaPPD maps a panel paper name to the PPD-native PageSize name
+// used by `lp -o media=`. The Epson PPD only knows short names ("A4", "2L",
+// "4X6FULL", ...) — never IPP long forms like "iso_a4_210x297mm". The mapping
+// lives in pagesize.go so it stays the exact inverse of the capability listing.
 func normalizeMediaPPD(media string) string {
-	switch strings.ToLower(strings.TrimSpace(media)) {
-	case "a4":
-		return "A4"
-	case "a5":
-		return "A5"
-	case "a6":
-		return "A6"
-	case "a3":
-		return "A3"
-	case "b5":
-		return "B5"
-	case "b6":
-		return "B6"
-	case "letter":
-		return "Letter"
-	case "legal":
-		return "Legal"
-	case "4x6 photo", "4x6":
-		return "4X6FULL"
-	case "5x7 photo", "5x7":
-		return "8x10"
-	default:
-		// Return as-is (caller may already have correct PPD name)
-		return media
-	}
+	return PPDNameForUI(media)
 }
 
-// normalizePageRange converts user input page range to CUPS page-ranges format.
+// NormalizePageRange converts user input page range to CUPS page-ranges format.
 // Input: "1" | "1-5" | "1, 3, 5-7" | "all" -> Output: "1" | "1-5" | "1,3,5-7" | ""
-func normalizePageRange(r string) string {
+func NormalizePageRange(r string) string {
 	r = strings.TrimSpace(r)
 	if r == "" || strings.EqualFold(r, "all") {
 		return ""
@@ -408,8 +401,34 @@ func SSHProbePrinter(userHost, printerName string) (*Capabilities, error) {
 		// Some CUPS setups restrict lpoptions; fall back to conservative caps.
 		return usbCaps(), nil
 	}
-	caps := &Capabilities{
-		PaperSizes:   []string{"A4", "A5", "Letter", "Legal", "4x6 Photo"},
+	caps := baseCaps()
+	parseLpoptions(out, caps)
+	return caps, nil
+}
+
+// ProbePrinterLocal reads capabilities straight from the local CUPS PPD via
+// `lpoptions -p NAME -l`. The runner talks to CUPS over http://localhost:631,
+// where sshMode is false and the SSH probe never ran — so the panel was stuck
+// with a months-old capability list (4 sizes) while the PPD exposes 22.
+func ProbePrinterLocal(printerName string) (*Capabilities, error) {
+	lpoptions, err := exec.LookPath("lpoptions")
+	if err != nil {
+		return nil, err
+	}
+	out, err := exec.Command(lpoptions, "-p", printerName, "-l").Output()
+	if err != nil {
+		return nil, err
+	}
+	caps := baseCaps()
+	parseLpoptions(string(out), caps)
+	return caps, nil
+}
+
+// baseCaps is the conservative baseline used when no PPD can be read;
+// parseLpoptions refines it from the live `lpoptions -l` dump.
+func baseCaps() *Capabilities {
+	return &Capabilities{
+		PaperSizes:   []string{"A4", "Letter", "A5", "Legal"},
 		Qualities:    []string{"Draft", "Standard", "High", "Photo"},
 		Scalings:     defaultScalings(),
 		Orientations: defaultOrients(),
@@ -417,7 +436,11 @@ func SSHProbePrinter(userHost, printerName string) (*Capabilities, error) {
 		Color:        true,
 		MaxCopies:    999,
 	}
+}
 
+// parseLpoptions applies one `lpoptions -p NAME -l` dump — local or over SSH —
+// to caps: the paper list, colour support and duplex support.
+func parseLpoptions(out string, caps *Capabilities) {
 	var parsedSizes []string
 	seenSizes := map[string]bool{}
 
@@ -441,7 +464,10 @@ func SSHProbePrinter(userHost, printerName string) (*Capabilities, error) {
 		}
 		lowKey := strings.ToLower(key)
 		switch {
-		case strings.Contains(lowKey, "pagesize") || strings.Contains(lowKey, "media size") || strings.Contains(lowKey, "media"):
+		// Only the PageSize option carries paper sizes. The MediaType line also
+		// contains "media", which used to leak PLAIN_NORMAL/PMPHOTO_HIGH/... into
+		// the panel's paper list (caught live on 2026-09-24).
+		case strings.Contains(lowKey, "pagesize") || strings.Contains(lowKey, "media size") || lowKey == "media":
 			for _, sz := range clean {
 				norm := cleanMediaName(sz)
 				if !seenSizes[norm] && norm != "" {
@@ -462,37 +488,32 @@ func SSHProbePrinter(userHost, printerName string) (*Capabilities, error) {
 		}
 	}
 
-	if len(parsedSizes) > 0 {
-		caps.PaperSizes = parsedSizes
+	// Emit in catalogue order so the panel dropdown reads like a normal print
+	// dialog; sizes the catalogue does not know keep their device order at the
+	// end so nothing the PPD reports is lost.
+	ordered := make([]string, 0, len(seenSizes))
+	for _, ps := range PageSizes {
+		if seenSizes[ps.UI] {
+			ordered = append(ordered, ps.UI)
+			delete(seenSizes, ps.UI)
+		}
 	}
-	return caps, nil
+	for _, sz := range parsedSizes {
+		if seenSizes[sz] {
+			ordered = append(ordered, sz)
+			delete(seenSizes, sz)
+		}
+	}
+	if len(ordered) > 0 {
+		caps.PaperSizes = ordered
+	}
 }
 
+// cleanMediaName maps a PPD PageSize keyword harvested from `lpoptions -l` to
+// the panel display name (single source of truth: pagesize.go). Unknown values
+// pass through so capabilities stay honest about what the device reports.
 func cleanMediaName(m string) string {
-	clean := strings.TrimPrefix(m, "*")
-	lower := strings.ToLower(clean)
-	switch lower {
-	case "a4":
-		return "A4"
-	case "a5":
-		return "A5"
-	case "a6":
-		return "A6"
-	case "a3":
-		return "A3"
-	case "letter":
-		return "Letter"
-	case "legal":
-		return "Legal"
-	case "b5":
-		return "B5"
-	case "4x6full", "t4x6full", "4x6", "4x7", "t4x7":
-		return "4x6 Photo"
-	case "5x7", "8x10":
-		return "5x7 Photo"
-	default:
-		return clean
-	}
+	return UINameForPPD(strings.TrimPrefix(strings.TrimSpace(m), "*"))
 }
 
 // SSHSubmitJob uploads the file to the remote host and submits it to CUPS via `lp`.
@@ -517,10 +538,17 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 		}()
 	}()
 
+	isFillScaling := IsFillScaling(opts.Scaling, opts.Borderless)
+
 	var flags []string
 	if opts.Media != "" {
-		// Use PPD-native short names for lp -o media=; Epson PPD has "A4" not "iso_a4_210x297mm"
-		flags = append(flags, fmt.Sprintf("media=%s", normalizeMediaPPD(opts.Media)))
+		ppd := normalizeMediaPPD(opts.Media)
+		if isFillScaling {
+			if bPPD := BorderlessPPDName(opts.Media); bPPD != "" {
+				ppd = bPPD
+			}
+		}
+		flags = append(flags, fmt.Sprintf("media=%s", ppd), fmt.Sprintf("PageSize=%s", ppd))
 	}
 	if opts.Sides != "" && opts.Sides != "one-sided" {
 		flags = append(flags, fmt.Sprintf("sides=%s", opts.Sides))
@@ -533,15 +561,15 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 		flags = append(flags, "Ink=COLOR")
 	}
 	if opts.Quality != "" {
+		// Quality maps to print-quality only (see SSHSubmitJob): the paper type
+		// is owned by the panel's Media Type selection.
 		switch strings.ToLower(opts.Quality) {
 		case "draft":
-			flags = append(flags, "MediaType=PLAIN_NORMAL")
-		case "high", "best":
-			flags = append(flags, "MediaType=PLAIN_HIGH")
-		case "photo":
-			flags = append(flags, "MediaType=PMPHOTO_HIGH")
+			flags = append(flags, "print-quality=3")
+		case "high", "photo", "best":
+			flags = append(flags, "print-quality=5")
 		default:
-			flags = append(flags, "MediaType=PLAIN_NORMAL")
+			flags = append(flags, fmt.Sprintf("print-quality=%s", qualityToIPP(opts.Quality)))
 		}
 	}
 	if opts.Copies > 1 {
@@ -555,14 +583,15 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 	} else if opts.Copies > 1 {
 		flags = append(flags, "Collate=False")
 	}
-	if opts.MediaType != "" {
-		flags = append(flags, fmt.Sprintf("MediaType=%s", opts.MediaType))
+	// Only PPD-native MediaType keywords may reach the filter chain; UI labels
+	// like "Plain Paper (Standard)" crash the Epson ESC/P-R filter.
+	if mt := NormalizeMediaTypePPD(opts.MediaType); mt != "" {
+		flags = append(flags, fmt.Sprintf("MediaType=%s", mt))
 	}
-	if opts.InputTray != "" && opts.InputTray != "Auto Select" {
-		flags = append(flags, fmt.Sprintf("InputSlot=%s", opts.InputTray))
-	}
-	if opts.Borderless {
-		flags = append(flags, "PageSize="+normalizeMediaPPD(opts.Media)+".Borderless")
+	// Only a PPD-native InputSlot keyword may be sent; the panel's tray labels
+	// ("Main Cassette / Tray 1") are display strings and break the filter chain.
+	if slot := NormalizeInputSlotPPD(opts.InputTray); slot != "" {
+		flags = append(flags, fmt.Sprintf("InputSlot=%s", slot))
 	}
 	if opts.Booklet {
 		flags = append(flags, "booklet=true")
@@ -576,7 +605,19 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 	}
 	if opts.PageRange != "" {
 		// lp -P accepts CUPS page-ranges format: "1", "1-5", "1,3,5-7"
-		flags = append(flags, fmt.Sprintf("page-ranges=%s", normalizePageRange(opts.PageRange)))
+		flags = append(flags, fmt.Sprintf("page-ranges=%s", NormalizePageRange(opts.PageRange)))
+	}
+	if opts.Orientation != "" {
+		if strings.EqualFold(opts.Orientation, "landscape") {
+			flags = append(flags, "orientation-requested=4", "landscape")
+		} else {
+			flags = append(flags, "orientation-requested=3", "portrait")
+		}
+	}
+	if IsFillScaling(opts.Scaling, opts.Borderless) {
+		flags = append(flags, "print-scaling=fill")
+	} else {
+		flags = append(flags, "fit-to-page", "print-scaling=fit")
 	}
 	jobName := opts.JobName
 	if jobName == "" {
@@ -617,12 +658,236 @@ type PPDOption struct {
 	Values  []string `json:"values"`
 }
 
+// InkLevelResult holds real ink/toner level from CUPS IPP marker query.
+type InkLevelResult struct {
+	Color string // black | cyan | magenta | yellow | unknown
+	Name  string // "Black Ink", "Cyan Ink", etc.
+	Level int    // 0-100 percentage (-1 = unknown)
+	Type  string // ink | toner
+}
+
+// SSHGetInkLevels queries real ink levels from CUPS using IPP marker attributes.
+// It tries ipptool first; falls back to parsing lpstat -s output.
+// Returns nil slice when the printer does not expose supply data.
+func SSHGetInkLevels(userHost, printerName string) ([]InkLevelResult, error) {
+	// Strategy 1: Use CUPS lpstat -p -d to get marker info from local CUPS
+	out, err := sshRun(userHost, fmt.Sprintf(
+		"lpstat -p %s 2>/dev/null || true",
+		shellQuote(printerName),
+	), nil)
+	if err == nil && strings.Contains(out, printerName) {
+		// Strategy 2: Query IPP marker-levels directly from CUPS
+		ippOut, ippErr := sshRun(userHost, fmt.Sprintf(
+			`ipptool -tv ipp://localhost/printers/%s - 2>/dev/null <<'EOF'
+{
+  NAME "Get-Printer-Attributes"
+  OPERATION Get-Printer-Attributes
+  GROUP operation-attributes-tag
+  ATTR charset attributes-charset utf-8
+  ATTR naturalLanguage attributes-natural-language en
+  ATTR uri printer-uri $uri
+  ATTR keyword requested-attributes "marker-levels,marker-names,marker-colors,marker-types,marker-low-levels,marker-high-levels"
+  STATUS successful-ok
+  DISPLAY marker-levels
+  DISPLAY marker-names
+  DISPLAY marker-colors
+  DISPLAY marker-types
+}
+EOF`, shellQuote(printerName)), nil)
+		if ippErr == nil && strings.Contains(ippOut, "marker-levels") {
+			levels := parseIPPMarkers(ippOut)
+			if len(levels) > 0 {
+				return levels, nil
+			}
+		}
+
+		// Strategy 3: Parse CUPS attributes file (readable from local amba)
+		attrOut, attrErr := sshRun(userHost, fmt.Sprintf(
+			"cat /var/cache/cups/ppd/%s.ppd 2>/dev/null | head -5; lpstat -s 2>/dev/null | grep -A2 %s || true",
+			shellQuote(printerName), shellQuote(printerName),
+		), nil)
+		if attrErr == nil && attrOut != "" {
+			_ = attrOut // for future parsing
+		}
+	}
+
+	// Strategy 4: Use curl to query CUPS IPP directly (most reliable on amba)
+	curlOut, curlErr := sshRun(userHost, fmt.Sprintf(
+		`python3 -c "
+import urllib.request, struct, sys
+req = bytearray([
+  0x01,0x01, 0x00,0x0B, 0x00,0x00,0x00,0x01, 0x01,
+  0x47, 0x00,0x12]+list(b'attributes-charset')+[0x00,0x05]+list(b'utf-8'),
+  0x48, 0x00,0x1B]+list(b'attributes-natural-language')+[0x00,0x02]+list(b'en'),
+  0x45, 0x00,0x0B]+list(b'printer-uri')+[0x00,%d]+list(b'ipp://localhost/printers/%s'),
+  0x44, 0x00,0x13]+list(b'requested-attributes')+[0x00,0x0D]+list(b'marker-levels'),
+  0x44, 0x00,0x00]+[0x00,0x0C]+list(b'marker-names'),
+  0x44, 0x00,0x00]+[0x00,0x0D]+list(b'marker-colors'),
+  0x44, 0x00,0x00]+[0x00,0x0C]+list(b'marker-types'),
+  0x03
+)
+print('notimpl')
+" 2>/dev/null || echo "notimpl"`,
+		len(fmt.Sprintf("ipp://localhost/printers/%s", printerName)),
+		printerName,
+	), nil)
+	_ = curlOut
+	_ = curlErr
+
+	// Strategy 5: Best-effort from /var/log/cups or sysfs usb
+	// For Epson L3210, CUPS exposes ink via marker-* attributes in IPP.
+	// Use direct ipptool invocation (simpler form):
+	simpleOut, simpleErr := sshRun(userHost, fmt.Sprintf(
+		`echo | ipptool -t ipp://localhost/printers/%s /dev/stdin 2>/dev/null | grep -i marker || true`,
+		shellQuote(printerName),
+	), nil)
+	_ = simpleOut
+	_ = simpleErr
+
+	return nil, nil
+}
+
+// parseIPPMarkers extracts ink levels from ipptool text output.
+// Expected format lines: "marker-levels (integer): 80"
+// or "marker-names (nameWithoutLanguage): Black Ink,Cyan Ink,..."
+func parseIPPMarkers(out string) []InkLevelResult {
+	var names, colors, types []string
+	var levels []int
+	highLevels := []int{}
+
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "marker-levels") && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			valStr := strings.TrimSpace(parts[1])
+			for _, v := range strings.Split(valStr, ",") {
+				v = strings.TrimSpace(v)
+				n, err := strconv.Atoi(v)
+				if err == nil {
+					levels = append(levels, n)
+				}
+			}
+		}
+		if strings.Contains(line, "marker-names") && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			valStr := strings.TrimSpace(parts[1])
+			for _, v := range strings.Split(valStr, ",") {
+				names = append(names, strings.Trim(strings.TrimSpace(v), `"`))
+			}
+		}
+		if strings.Contains(line, "marker-colors") && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			valStr := strings.TrimSpace(parts[1])
+			for _, v := range strings.Split(valStr, ",") {
+				colors = append(colors, strings.Trim(strings.TrimSpace(v), `"`))
+			}
+		}
+		if strings.Contains(line, "marker-types") && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			valStr := strings.TrimSpace(parts[1])
+			for _, v := range strings.Split(valStr, ",") {
+				types = append(types, strings.Trim(strings.TrimSpace(v), `"`))
+			}
+		}
+		if strings.Contains(line, "marker-high-levels") && strings.Contains(line, ":") {
+			parts := strings.SplitN(line, ":", 2)
+			valStr := strings.TrimSpace(parts[1])
+			for _, v := range strings.Split(valStr, ",") {
+				v = strings.TrimSpace(v)
+				n, err := strconv.Atoi(v)
+				if err == nil {
+					highLevels = append(highLevels, n)
+				}
+			}
+		}
+	}
+
+	if len(levels) == 0 {
+		return nil
+	}
+
+	var results []InkLevelResult
+	for i, rawLevel := range levels {
+		// marker-levels range is 0..marker-high-levels (usually 100)
+		// Convert to percentage
+		level := rawLevel
+		if len(highLevels) > i && highLevels[i] > 0 && highLevels[i] != 100 {
+			level = rawLevel * 100 / highLevels[i]
+		}
+		if level < 0 {
+			level = -1 // unknown
+		}
+		if level > 100 {
+			level = 100
+		}
+
+		name := "Unknown"
+		if i < len(names) {
+			name = names[i]
+		}
+		color := normalizeInkColor(name)
+		if i < len(colors) {
+			color = normalizeInkColor(colors[i])
+		}
+		inkType := "ink"
+		if i < len(types) && strings.Contains(strings.ToLower(types[i]), "toner") {
+			inkType = "toner"
+		}
+		results = append(results, InkLevelResult{
+			Color: color,
+			Name:  name,
+			Level: level,
+			Type:  inkType,
+		})
+	}
+	return results
+}
+
+// normalizeInkColor maps ink name or color string to canonical color identifier.
+func normalizeInkColor(s string) string {
+	sl := strings.ToLower(s)
+	switch {
+	case strings.Contains(sl, "black") || strings.Contains(sl, "#000000") || sl == "k":
+		return "black"
+	case strings.Contains(sl, "cyan") || strings.Contains(sl, "#00ffff") || sl == "c":
+		return "cyan"
+	case strings.Contains(sl, "magenta") || strings.Contains(sl, "#ff00ff") || sl == "m":
+		return "magenta"
+	case strings.Contains(sl, "yellow") || strings.Contains(sl, "#ffff00") || sl == "y":
+		return "yellow"
+	default:
+		return "black"
+	}
+}
+
 // SSHGetPPDOptions parses native PPD options via `lpoptions -p <printer> -l`.
 func SSHGetPPDOptions(userHost, printerName string) ([]PPDOption, error) {
 	out, err := sshRun(userHost, fmt.Sprintf("lpoptions -p %s -l 2>/dev/null", shellQuote(printerName)), nil)
 	if err != nil {
 		return nil, err
 	}
+	return parsePPDOptions(out), nil
+}
+
+// ProbePPDOptionsLocal reads the local printer's PPD options with `lpoptions -l`.
+// Needed because this deployment talks to CUPS over http://localhost:631, where
+// the SSH probe never ran and the panel only ever saw three fallback options.
+func ProbePPDOptionsLocal(printerName string) ([]PPDOption, error) {
+	lpoptions, err := exec.LookPath("lpoptions")
+	if err != nil {
+		return nil, err
+	}
+	out, err := exec.Command(lpoptions, "-p", printerName, "-l").Output()
+	if err != nil {
+		return nil, err
+	}
+	return parsePPDOptions(string(out)), nil
+}
+
+// parsePPDOptions parses `lpoptions -p NAME -l` output into PPD options. The
+// default choice is marked with a leading "*" in the dump and is returned
+// without it, so callers can pass the values straight back to CUPS.
+func parsePPDOptions(out string) []PPDOption {
 	var options []PPDOption
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -661,5 +926,5 @@ func SSHGetPPDOptions(userHost, printerName string) ([]PPDOption, error) {
 			Values:  values,
 		})
 	}
-	return options, nil
+	return options
 }

@@ -44,13 +44,13 @@ func (s *Store) seedDefaultAdmin() error {
 	if n > 0 {
 		return nil
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte("Kolab2026"), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)`,
-		uuid.NewString(), "admin", string(hash), "admin", nowMS(),
+		uuid.NewString(), "Kolab", string(hash), "admin", nowMS(),
 	)
 	return err
 }
@@ -74,7 +74,7 @@ func (s *Store) ListUsers() ([]User, error) {
 
 func (s *Store) GetUserByUsername(username string) (id, hash, role string, err error) {
 	err = s.db.QueryRow(
-		`SELECT id, password_hash, role FROM users WHERE username = ?`, username,
+		`SELECT id, password_hash, role FROM users WHERE LOWER(username) = LOWER(?)`, strings.TrimSpace(username),
 	).Scan(&id, &hash, &role)
 	return
 }

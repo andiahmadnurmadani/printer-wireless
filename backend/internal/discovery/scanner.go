@@ -232,7 +232,9 @@ func (s *Scanner) scanSubnets() []Device {
 		go func() {
 			defer wg.Done()
 			for t := range targets {
-				address := fmt.Sprintf("%s:%d", t.ip, t.port)
+				// net.JoinHostPort brackets IPv6 literals correctly; a raw
+				// "%s:%d" produces an undialable address for IPv6 targets.
+				address := net.JoinHostPort(t.ip, fmt.Sprint(t.port))
 				conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
 				if err != nil {
 					continue

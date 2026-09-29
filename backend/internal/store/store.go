@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,24 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// QueryTimeout bounds a single database read. With SetMaxOpenConns(1) a wedged
+// query holds the only pooled connection, so any read left unbounded can park
+// the entire API (all goroutines end up in database/sql.(*DB).conn — observed
+// live on 2026-09-24 on amba).
+const QueryTimeout = 10 * time.Second
+
+// WithQueryTimeout derives a context bounded by QueryTimeout, or by the
+// parent's own earlier deadline when it is shorter.
+func WithQueryTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if dl, ok := parent.Deadline(); ok && time.Until(dl) < QueryTimeout {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, QueryTimeout)
+}
 
 // Store wraps the SQLite database connection and all persistence logic.
 type Store struct {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"errors"
@@ -164,8 +165,17 @@ func (s *Server) StartCupsPoller() {
 // using authoritative IPP job-state queries, so aborted/canceled jobs are
 // never mistaken for successful completions.
 func (s *Server) syncCupsJobStatus() {
-	jobs, err := s.store.ListJobs()
+	// Bound the DB read: the poller ticks every second, and a wedged SQLite
+	// connection must never park it (or any other request) forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	ctxList, cancelList := store.WithQueryTimeout(ctx)
+	defer cancelList()
+	jobs, err := s.store.ListJobsCtx(ctxList)
 	if err != nil {
+		if s.log != nil {
+			s.log.Printf("cups poller: list jobs: %v", err)
+		}
 		return
 	}
 	userHost := s.cfg.CUPSSSH
@@ -797,17 +807,33 @@ func (s *Server) handleRefreshPrinter(w http.ResponseWriter, r *http.Request) {
 					p.Status = "online"
 				}
 			}
-		} else if lpstat, err := exec.LookPath("lpstat"); err == nil {
-			// Local CUPS query via lpstat
-			if out, err := exec.Command(lpstat, "-p", printerName).CombinedOutput(); err == nil {
-				sOut := strings.ToLower(string(out))
-				switch {
-				case strings.Contains(sOut, "printing"):
-					p.Status = "printing"
-				case strings.Contains(sOut, "disabled") || strings.Contains(sOut, "offline") || strings.Contains(sOut, "unplugged"):
-					p.Status = "offline"
-				default:
-					p.Status = "online"
+		} else {
+			// Local CUPS (http://localhost:631). Refresh capabilities from the
+			// live PPD too — this branch previously skipped it, so the panel
+			// kept a stale list (4 sizes) while the PPD exposes 22.
+			if caps, err := discovery.ProbePrinterLocal(printerName); err == nil {
+				p.Caps = store.Capabilities{
+					PaperSizes:   caps.PaperSizes,
+					Qualities:    caps.Qualities,
+					Scalings:     caps.Scalings,
+					Orientations: caps.Orientations,
+					Duplex:       caps.Duplex,
+					Color:        caps.Color,
+					MaxCopies:    caps.MaxCopies,
+				}
+			}
+			if lpstat, err := exec.LookPath("lpstat"); err == nil {
+				// Local CUPS query via lpstat
+				if out, err := exec.Command(lpstat, "-p", printerName).CombinedOutput(); err == nil {
+					sOut := strings.ToLower(string(out))
+					switch {
+					case strings.Contains(sOut, "printing"):
+						p.Status = "printing"
+					case strings.Contains(sOut, "disabled") || strings.Contains(sOut, "offline") || strings.Contains(sOut, "unplugged"):
+						p.Status = "offline"
+					default:
+						p.Status = "online"
+					}
 				}
 			}
 		}
@@ -1239,43 +1265,81 @@ func (s *Server) handleSetDefault(w http.ResponseWriter, r *http.Request) {
 }
 
 // enrichPrinterHealth attaches dynamic CMYK ink levels and hardware sensor alerts to a printer.
+// It attempts to query real ink levels from CUPS via IPP marker attributes first.
 func (s *Server) enrichPrinterHealth(p *store.Printer) {
-	// 1. Dynamic Ink Levels (CMYK)
-	if p.Caps.Color {
-		tonerBase := p.Toner
-		if tonerBase <= 0 || tonerBase > 100 {
-			tonerBase = 85
-		}
-		cLevel := (tonerBase * 92) / 100
-		if cLevel < 15 {
-			cLevel = 15
-		}
-		mLevel := (tonerBase * 84) / 100
-		if mLevel < 10 {
-			mLevel = 10
-		}
-		yLevel := (tonerBase * 96) / 100
-		if yLevel < 20 {
-			yLevel = 20
-		}
+	// ── 1. Try Real Ink Levels from CUPS IPP Marker Attributes ──
+	userHost := s.cfg.CUPSSSH
+	if userHost == "" && discovery.IsSSHURL(s.cfg.CUPSURL) {
+		userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
+	}
 
-		p.InkLevels = []store.InkLevel{
-			{Color: "black", Name: "Black (K)", Level: tonerBase, Type: "ink"},
-			{Color: "cyan", Name: "Cyan (C)", Level: cLevel, Type: "ink"},
-			{Color: "magenta", Name: "Magenta (M)", Level: mLevel, Type: "ink"},
-			{Color: "yellow", Name: "Yellow (Y)", Level: yLevel, Type: "ink"},
-		}
-	} else {
-		tonerBase := p.Toner
-		if tonerBase <= 0 {
-			tonerBase = 75
-		}
-		p.InkLevels = []store.InkLevel{
-			{Color: "black", Name: "Black Toner", Level: tonerBase, Type: "toner"},
+	realInkFetched := false
+	if userHost != "" {
+		printerName := cupsPrinterName(*p)
+		inkResults, err := discovery.SSHGetInkLevels(userHost, printerName)
+		if err == nil && len(inkResults) > 0 {
+			p.InkLevels = make([]store.InkLevel, 0, len(inkResults))
+			for _, ir := range inkResults {
+				level := ir.Level
+				if level < 0 {
+					level = 0
+				}
+				p.InkLevels = append(p.InkLevels, store.InkLevel{
+					Color: ir.Color,
+					Name:  ir.Name,
+					Level: level,
+					Type:  ir.Type,
+				})
+			}
+			// Update Toner field with black ink level for backward compat
+			for _, il := range p.InkLevels {
+				if il.Color == "black" {
+					p.Toner = il.Level
+					break
+				}
+			}
+			realInkFetched = true
 		}
 	}
 
-	// 2. Hardware Sensors
+	// ── 2. Fallback: Estimate CMYK Levels from Toner field ──
+	if !realInkFetched {
+		if p.Caps.Color {
+			tonerBase := p.Toner
+			if tonerBase <= 0 || tonerBase > 100 {
+				tonerBase = 85
+			}
+			cLevel := (tonerBase * 92) / 100
+			if cLevel < 15 {
+				cLevel = 15
+			}
+			mLevel := (tonerBase * 84) / 100
+			if mLevel < 10 {
+				mLevel = 10
+			}
+			yLevel := (tonerBase * 96) / 100
+			if yLevel < 20 {
+				yLevel = 20
+			}
+
+			p.InkLevels = []store.InkLevel{
+				{Color: "black", Name: "Black (K)", Level: tonerBase, Type: "ink"},
+				{Color: "cyan", Name: "Cyan (C)", Level: cLevel, Type: "ink"},
+				{Color: "magenta", Name: "Magenta (M)", Level: mLevel, Type: "ink"},
+				{Color: "yellow", Name: "Yellow (Y)", Level: yLevel, Type: "ink"},
+			}
+		} else {
+			tonerBase := p.Toner
+			if tonerBase <= 0 {
+				tonerBase = 75
+			}
+			p.InkLevels = []store.InkLevel{
+				{Color: "black", Name: "Black Toner", Level: tonerBase, Type: "toner"},
+			}
+		}
+	}
+
+	// ── 3. Hardware Sensors ──
 	stateText := "Printer is online and ready for printing."
 	if p.Status == "offline" {
 		stateText = "Printer is offline or turned off."
@@ -1285,14 +1349,27 @@ func (s *Server) enrichPrinterHealth(p *store.Printer) {
 		stateText = "Printer error state reported by CUPS subsystem."
 	}
 
+	// Detect low ink from real ink levels
+	lowInk := false
+	for _, il := range p.InkLevels {
+		if il.Level > 0 && il.Level < 15 {
+			lowInk = true
+			break
+		}
+	}
+	if !lowInk {
+		lowInk = p.Toner > 0 && p.Toner < 15
+	}
+
 	p.Sensors = store.HardwareSensors{
 		PaperJam:  false,
 		DoorOpen:  false,
 		LowPaper:  p.Paper > 0 && p.Paper < 20,
-		LowInk:    p.Toner > 0 && p.Toner < 15,
+		LowInk:    lowInk,
 		StateText: stateText,
 	}
 }
+
 
 // handlePrinterHealth returns diagnostic health info, live ink levels, and supported maintenance operations.
 func (s *Server) handlePrinterHealth(w http.ResponseWriter, r *http.Request) {
@@ -1354,16 +1431,23 @@ func (s *Server) handleGetPPDOptions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	printerName := cupsPrinterName(p)
-	userHost := s.cfg.CUPSSSH
-	if userHost == "" && discovery.IsSSHURL(s.cfg.CUPSURL) {
-		userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
-	}
 
-	options, err := discovery.SSHGetPPDOptions(userHost, printerName)
-	if err != nil || len(options) == 0 {
+	var options []discovery.PPDOption
+	if discovery.IsSSHURL(s.cfg.CUPSURL) {
+		userHost := s.cfg.CUPSSSH
+		if userHost == "" {
+			userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
+		}
+		options, _ = discovery.SSHGetPPDOptions(userHost, printerName)
+	} else {
+		// Local CUPS: read the real PPD from this host's lpoptions. Without this
+		// the panel only ever saw the three hardcoded fallback options.
+		options, _ = discovery.ProbePPDOptionsLocal(printerName)
+	}
+	if len(options) == 0 {
 		// Fallback default options
 		options = []discovery.PPDOption{
-			{Name: "PageSize", Label: "Paper Size", Default: "A4", Values: []string{"A4", "A5", "Letter", "Legal", "4X6FULL"}},
+			{Name: "PageSize", Label: "Paper Size", Default: discovery.DefaultPageSize, Values: discovery.PPDNames()},
 			{Name: "MediaType", Label: "Print Quality / Media", Default: "PLAIN_NORMAL", Values: []string{"PLAIN_NORMAL", "PLAIN_HIGH", "PMPHOTO_HIGH", "PMMATT_NORMAL"}},
 			{Name: "Ink", Label: "Color Mode", Default: "COLOR", Values: []string{"COLOR", "MONO"}},
 		}
@@ -1562,7 +1646,11 @@ func (s *Server) handleDeleteDiscovered(w http.ResponseWriter, r *http.Request) 
 // ── Jobs handlers ──
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	list, err := s.store.ListJobs()
+	// Bounded read: with a single pooled SQLite connection an unbounded query
+	// could hang this endpoint (and the whole panel) indefinitely.
+	ctx, cancel := store.WithQueryTimeout(r.Context())
+	defer cancel()
+	list, err := s.store.ListJobsCtx(ctx)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1603,11 +1691,17 @@ type createJobReq struct {
 	Watermark     string `json:"watermark,omitempty"`
 	ManualDuplex  bool   `json:"manualDuplex,omitempty"`
 	DuplexStep    string `json:"duplexStep,omitempty"`
+	PrintAsImage  bool   `json:"printAsImage,omitempty"`
+	PPDSettings   map[string]string `json:"ppdSettings,omitempty"`
 	SecureRelease bool   `json:"secureRelease,omitempty"`
 	PIN           string `json:"pin,omitempty"`
 	Cost          int    `json:"cost,omitempty"`
 	User          string `json:"user,omitempty"`
 	Department    string `json:"department,omitempty"`
+	DuplexMode    string `json:"duplexMode,omitempty"`
+	Rotation      int    `json:"rotation,omitempty"`
+	ScalePercent  int    `json:"scalePercent,omitempty"`
+	ReverseOrder  bool   `json:"reverseOrder,omitempty"`
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
@@ -1823,6 +1917,7 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 
 	opts := discovery.JobOptions{
 		Media:        req.PaperSize,
+		Orientation:  req.Orientation,
 		Sides:        "one-sided",
 		Copies:       req.Copies,
 		ColorMode:    "color",
@@ -1831,6 +1926,7 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		JobName:      name,
 		FileType:     mimeForFile(name),
 		PageRange:    req.PageRange,
+		PageCount:    req.Pages,
 		NUp:          req.NUp,
 		Collate:      req.Collate,
 		MediaType:    req.MediaType,
@@ -1840,9 +1936,34 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		Watermark:    req.Watermark,
 		ManualDuplex: req.ManualDuplex,
 		DuplexStep:   req.DuplexStep,
+		PrintAsImage: req.PrintAsImage,
+		PPDSettings:  req.PPDSettings,
 	}
 	if req.Duplex {
-		opts.Sides = "two-sided-long-edge"
+		if strings.EqualFold(req.DuplexMode, "short") || strings.EqualFold(req.DuplexMode, "two-sided-short-edge") {
+			opts.Sides = "two-sided-short-edge"
+		} else {
+			opts.Sides = "two-sided-long-edge"
+		}
+	}
+	if req.Rotation == 90 {
+		if strings.EqualFold(opts.Orientation, "portrait") {
+			opts.Orientation = "landscape"
+		} else {
+			opts.Orientation = "reverse-portrait"
+		}
+	} else if req.Rotation == 180 {
+		if strings.EqualFold(opts.Orientation, "portrait") {
+			opts.Orientation = "reverse-portrait"
+		} else {
+			opts.Orientation = "reverse-landscape"
+		}
+	} else if req.Rotation == 270 {
+		if strings.EqualFold(opts.Orientation, "portrait") {
+			opts.Orientation = "reverse-landscape"
+		} else {
+			opts.Orientation = "portrait"
+		}
 	}
 	if !req.Color {
 		opts.ColorMode = "grayscale"
@@ -1852,9 +1973,43 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	_ = s.store.PatchJobStatus(jobID, "processing")
 
 	isGray := opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" || !req.Color
-	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize)
+	origExt := strings.ToLower(filepath.Ext(filePath))
+	isImg := origExt == ".png" || origExt == ".jpg" || origExt == ".jpeg" || origExt == ".webp" ||
+		origExt == ".bmp" || origExt == ".gif" || origExt == ".tif" || origExt == ".tiff" ||
+		origExt == ".heic" || origExt == ".svg"
+
+	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling)
 	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
 		opts.FileType = "application/pdf"
+		if isImg {
+			// For images, normalizeDocument has already rotated and scaled the raster
+			// to match the physical printer feed (595x842). Setting opts.Orientation to
+			// portrait prevents CUPS pdftopdf from applying a duplicate 90-degree rotation.
+			opts.Orientation = "portrait"
+		} else if strings.EqualFold(opts.Orientation, "landscape") {
+			// If PDF page is already in landscape dimensions (w > h), avoid CUPS double-rotation
+			if idCmd, idErr := exec.LookPath("identify"); idErr == nil {
+				if out, err := exec.Command(idCmd, "-format", "%w %h", filePath+"[0]").Output(); err == nil {
+					parts := strings.Fields(strings.TrimSpace(string(out)))
+					if len(parts) == 2 {
+						w, _ := strconv.Atoi(parts[0])
+						h, _ := strconv.Atoi(parts[1])
+						if w > h {
+							opts.Orientation = "portrait"
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Optional finishing passes, in the order a normal print dialog applies them:
+	// rasterize first ("print as image"), then stamp the watermark.
+	if opts.PrintAsImage {
+		filePath = rasterizeForPrint(filePath, s.log)
+	}
+	if strings.TrimSpace(opts.Watermark) != "" {
+		filePath = applyWatermark(filePath, opts.Watermark, s.log)
 	}
 
 	// Send original file directly to CUPS. For PDFs, CUPS uses its native
@@ -1876,10 +2031,7 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 			s.log.Printf("ssh-submit %s/%s: job-id=%d err=%v (grayscale=%v)", userHost, printerName, cupsJobID, submitErr, isGray)
 		}
 	} else {
-		// Pre-flight: ensure printer queue is clean and accepting jobs.
-		if cancelBin, cerr := exec.LookPath("cancel"); cerr == nil {
-			_ = exec.Command(cancelBin, "-a", printerName).Run()
-		}
+		// Pre-flight: ensure printer is enabled and accepting jobs (without aborting active prints).
 		if enableBin, eerr := exec.LookPath("cupsenable"); eerr == nil {
 			_ = exec.Command(enableBin, printerName).Run()
 		}
@@ -1900,7 +2052,13 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 			if lp, lerr := exec.LookPath("lp"); lerr == nil {
 				flags := []string{"-d", printerName}
 				if opts.Media != "" {
-					flags = append(flags, "-o", "media="+opts.Media, "-o", "PageSize="+opts.Media)
+					ppd := discovery.PPDNameForUI(opts.Media)
+					if strings.EqualFold(opts.Scaling, "fill") || strings.EqualFold(opts.Scaling, "fill page") || strings.EqualFold(opts.Scaling, "fill (crop)") || strings.EqualFold(opts.Scaling, "cover") || strings.EqualFold(opts.Scaling, "crop") || opts.Borderless {
+						if bPPD := discovery.BorderlessPPDName(opts.Media); bPPD != "" {
+							ppd = bPPD
+						}
+					}
+					flags = append(flags, "-o", "media="+ppd, "-o", "PageSize="+ppd)
 				}
 				if opts.Sides != "" {
 					flags = append(flags, "-o", "sides="+opts.Sides)
@@ -1910,11 +2068,54 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 				} else {
 					flags = append(flags, "-o", "Ink=COLOR")
 				}
-				if opts.MediaType != "" {
-					flags = append(flags, "-o", "MediaType="+opts.MediaType)
+				if mt := discovery.NormalizeMediaTypePPD(opts.MediaType); mt != "" {
+					flags = append(flags, "-o", "MediaType="+mt)
 				}
-				// Pass fit-to-page scaling to local lp
-				flags = append(flags, "-o", "fit-to-page", "-o", "print-scaling=fit")
+				if opts.Orientation != "" {
+					if strings.EqualFold(opts.Orientation, "landscape") {
+						flags = append(flags, "-o", "orientation-requested=4", "-o", "landscape")
+					} else {
+						flags = append(flags, "-o", "orientation-requested=3", "-o", "portrait")
+					}
+				}
+				// Pass scaling to local lp
+				if discovery.IsFillScaling(opts.Scaling, opts.Borderless) {
+					flags = append(flags, "-o", "print-scaling=fill")
+				} else {
+					flags = append(flags, "-o", "fit-to-page", "-o", "print-scaling=fit")
+				}
+				// Same finishing options the IPP path sends, so a fallback to lp
+				// does not silently drop N-Up / page range / collate / booklet.
+				if opts.NUp > 1 {
+					flags = append(flags, "-o", fmt.Sprintf("number-up=%d", opts.NUp), "-o", "number-up-layout=lrtb")
+				}
+				if opts.Collate {
+					flags = append(flags, "-o", "Collate=True")
+				} else if opts.Copies > 1 {
+					flags = append(flags, "-o", "Collate=False")
+				}
+				if opts.Booklet {
+					flags = append(flags, "-o", "booklet=true")
+				}
+				if slot := discovery.NormalizeInputSlotPPD(opts.InputTray); slot != "" {
+					flags = append(flags, "-o", "InputSlot="+slot)
+				}
+				// Printer-specific PPD options (Brightness, Contrast, ...) chosen
+				// by the operator, validated as bare keywords.
+				for _, kv := range discovery.PPDSettingsArgs(opts.PPDSettings) {
+					flags = append(flags, "-o", kv[0]+"="+kv[1])
+				}
+				if opts.ManualDuplex {
+					switch strings.ToLower(opts.DuplexStep) {
+					case "odd":
+						flags = append(flags, "-o", "page-set=odd")
+					case "even":
+						flags = append(flags, "-o", "page-set=even", "-o", "outputorder=reverse")
+					}
+				}
+				if pr := discovery.NormalizePageRange(opts.PageRange); pr != "" && !opts.ManualDuplex {
+					flags = append(flags, "-o", "page-ranges="+pr)
+				}
 				flags = append(flags, printFiles...)
 				cmd := exec.Command(lp, flags...)
 				cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LANGUAGE=en_US:en", "LC_ALL=C.UTF-8")
@@ -2145,7 +2346,7 @@ func shellQuote(s string) string {
 // normalizeDocument converts images (PNG, JPG, JPEG, WEBP, BMP) or raw documents
 // into standard A4 print-ready PDFs, fixes PDF rotation bugs with Ghostscript,
 // and if isGray is true, converts all color spaces into high-contrast DeviceGray.
-func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string) string {
+func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string) string {
 	ext := strings.ToLower(filepath.Ext(src))
 	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
 		ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff" ||
@@ -2194,13 +2395,65 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 	if isImage {
 		dstPDF := strings.TrimSuffix(src, ext) + ".pdf"
 		if conv, err := exec.LookPath("convert"); err == nil {
-			args := []string{"-density", "300", src, "-background", "white", "-flatten", "-alpha", "off"}
+			ptW, ptH := discovery.PageDimensionsPoints(media)
+			if ptW <= 0 || ptH <= 0 {
+				ptW, ptH = 595, 842 // fallback A4
+			}
+
+			// Detect if orientation is Landscape (either explicitly or by inspecting image aspect ratio)
+			isLandscape := strings.EqualFold(orientation, "landscape")
+			if !isLandscape && !strings.EqualFold(orientation, "portrait") {
+				if idCmd, idErr := exec.LookPath("identify"); idErr == nil {
+					if out, err := exec.Command(idCmd, "-format", "%w %h", src).Output(); err == nil {
+						parts := strings.Fields(strings.TrimSpace(string(out)))
+						if len(parts) == 2 {
+							w, _ := strconv.Atoi(parts[0])
+							h, _ := strconv.Atoi(parts[1])
+							if w > h {
+								isLandscape = true
+							}
+						}
+					}
+				}
+			}
+
+			// Physical desktop printers feed paper along the short edge (portrait, ptW <= ptH).
+			// We format the PDF directly to match the physical paper feed geometry.
+			if ptW > ptH {
+				ptW, ptH = ptH, ptW
+			}
+
+			// Pixel dimensions at true 300 DPI print density:
+			// ptW and ptH are points (72 points = 1 inch).
+			// pixel = points * 300 / 72.
+			// This prevents ImageMagick from interpreting points as pixels and shrinking the PDF to 1/4th size!
+			pixW := ptW * 300 / 72
+			pixH := ptH * 300 / 72
+
+			args := []string{src, "-auto-orient", "-background", "white", "-flatten", "-alpha", "off"}
 			if isGray {
 				args = append(args, "-colorspace", "Gray", "-contrast-stretch", "0.5%x0.5%")
 			}
-			args = append(args, "-page", media, dstPDF)
+
+			if isLandscape {
+				// Rotate 270 deg (counter-clockwise) so the landscape image fits the physical portrait sheet feed
+				args = append(args, "-rotate", "270")
+			}
+
+			// Proportional fit without cropping (Fit Utuh / Ukuran Asli) or Full page (Fill / Cover)
+			isCrop := discovery.IsFillScaling(scaling, false)
+			if isCrop {
+				args = append(args, "-resize", fmt.Sprintf("%dx%d^", pixW, pixH), "-gravity", "center", "-extent", fmt.Sprintf("%dx%d", pixW, pixH))
+			} else {
+				args = append(args, "-resize", fmt.Sprintf("%dx%d", pixW, pixH), "-gravity", "center", "-extent", fmt.Sprintf("%dx%d", pixW, pixH))
+			}
+			args = append(args, "-density", "300", "-page", fmt.Sprintf("%dx%d", pixW, pixH), dstPDF)
+
 			if out, err := exec.Command(conv, args...).CombinedOutput(); err == nil {
 				if fi, err := os.Stat(dstPDF); err == nil && fi.Size() > 0 {
+					if log != nil {
+						log.Printf("normalizeDocument: converted image %s → %s (landscape=%v, %dx%d pt [%dx%d px @ 300dpi], crop=%v)", filepath.Base(src), filepath.Base(dstPDF), isLandscape, ptW, ptH, pixW, pixH, isCrop)
+					}
 					return dstPDF
 				}
 			} else if log != nil {
@@ -2224,8 +2477,15 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		if targetPaper == "" {
 			targetPaper = "A4"
 		}
-		// Convert to clean Level 3 PostScript with explicit paper targeting and page expansion
-		cmdPS := exec.Command(pdftopsCmd, "-level3", "-paper", targetPaper, "-expand", src, psPath)
+	// Convert to clean Level 3 PostScript with explicit paper targeting and page
+	// expansion. pdftops only understands a handful of paper names, so unknown
+	// sizes omit -paper instead of failing the whole standardization step.
+	psArgs := []string{"-level3", "-expand"}
+	if name := discovery.PDFTOPSPaper(targetPaper); name != "" {
+		psArgs = append(psArgs, "-paper", name)
+	}
+	psArgs = append(psArgs, src, psPath)
+	cmdPS := exec.Command(pdftopsCmd, psArgs...)
 		if out, err := cmdPS.CombinedOutput(); err == nil {
 			// Convert PostScript back to pristine, standardized PDF
 			argsGS := []string{
@@ -2256,6 +2516,83 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		}
 	}
 
+	return src
+}
+
+// rasterizeForPrint implements the "print as image" option every normal print
+// dialog offers: every page is rendered to a raster and written back as a flat
+// PDF, so documents with exotic vectors/fonts still reach the printer intact.
+func rasterizeForPrint(src string, log *log.Logger) string {
+	if !strings.EqualFold(filepath.Ext(src), ".pdf") {
+		return src
+	}
+	fi, err := os.Stat(src)
+	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
+		return src
+	}
+	conv, err := exec.LookPath("convert")
+	if err != nil {
+		return src
+	}
+	dst := strings.TrimSuffix(src, ".pdf") + ".raster.pdf"
+	args := []string{"-density", "300", src, "-background", "white", "-alpha", "off", "-compress", "zip", dst}
+	out, err := exec.Command(conv, args...).CombinedOutput()
+	if err != nil {
+		if log != nil {
+			log.Printf("print-as-image: convert failed (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+		_ = os.Remove(dst)
+		return src
+	}
+	if chk, err := os.Stat(dst); err == nil && chk.Size() > 0 {
+		if log != nil {
+			log.Printf("print-as-image: %s rasterized (%d → %d bytes)", filepath.Base(src), fi.Size(), chk.Size())
+		}
+		return dst
+	}
+	_ = os.Remove(dst)
+	return src
+}
+
+// applyWatermark stamps text diagonally over every page using ghostscript's
+// EndPage hook. The panel has always had a watermark field; nothing rendered it
+// until now, so the setting silently did nothing.
+func applyWatermark(src, text string, log *log.Logger) string {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.EqualFold(filepath.Ext(src), ".pdf") {
+		return src
+	}
+	gs, err := exec.LookPath("gs")
+	if err != nil {
+		return src
+	}
+	dst := strings.TrimSuffix(src, ".pdf") + ".wm.pdf"
+	// PostScript string escaping: backslash and parentheses must be neutralised.
+	esc := strings.NewReplacer(`\`, `\\`, `(`, `\(`, `)`, `\)`).Replace(strings.ToValidUTF8(text, "?"))
+	hook := fmt.Sprintf(
+		"<< /EndPage { pop pop gsave 0.86 setgray /Helvetica-Bold findfont 72 scalefont setfont 45 rotate 150 330 moveto (%s) show grestore true } >> setpagedevice",
+		esc)
+	args := []string{
+		"-q", "-dBATCH", "-dNOPAUSE", "-dSAFER",
+		"-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.6",
+		"-sOutputFile=" + dst,
+		"-c", hook, "-f", src,
+	}
+	out, err := exec.Command(gs, args...).CombinedOutput()
+	if err != nil {
+		if log != nil {
+			log.Printf("watermark: gs failed (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+		_ = os.Remove(dst)
+		return src
+	}
+	if chk, err := os.Stat(dst); err == nil && chk.Size() > 0 {
+		if log != nil {
+			log.Printf("watermark: stamped %q on %s", text, filepath.Base(src))
+		}
+		return dst
+	}
+	_ = os.Remove(dst)
 	return src
 }
 

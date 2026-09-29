@@ -17,7 +17,7 @@ module.exports = {
         LC_ALL: 'C.UTF-8',
         KROOM_CUPS_URL: 'http://localhost:631',
         KROOM_CUPS_SSH: 'amba',
-        KROOM_ORIGINS: 'http://100.90.80.85:5174,http://localhost:5174,http://127.0.0.1:5174,http://100.90.80.85:8088,http://localhost:8088',
+        KROOM_ORIGINS: '*,http://100.90.80.85:5174,http://localhost:5174,http://127.0.0.1:5174,http://100.90.80.85:8088,http://localhost:8088',
         KROOM_DEMO: '0'
       },
       max_restarts: 10,

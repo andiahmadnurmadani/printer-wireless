@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = parseInt(process.env.PORT || '5174', 10);
+const BACKEND_HOST = process.env.BACKEND_HOST || '127.0.0.1';
+const BACKEND_PORT = parseInt(process.env.BACKEND_PORT || '8088', 10);
 // dist/ is built by amba (Node v20 via nvm) directly on the NAS mount, so amba owns the files.
 // If you see 404, run: npm run build  (on amba, with Node 20 in PATH)
 const DIST_DIR = process.env.DIST_DIR || '/mnt/web/Nouvem/printer-wireless/dist';
@@ -26,7 +28,8 @@ const MIME_TYPES = {
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -35,6 +38,35 @@ const server = http.createServer((req, res) => {
   }
 
   let reqPath = decodeURIComponent(req.url.split('?')[0]);
+
+  // ── Reverse Proxy /api and /uploads to Go backend (eliminates CORS & 404 HTML fallback) ──
+  if (reqPath.startsWith('/api') || reqPath.startsWith('/uploads')) {
+    const proxyReq = http.request({
+      hostname: BACKEND_HOST,
+      port: BACKEND_PORT,
+      path: req.url,
+      method: req.method,
+      headers: {
+        ...req.headers,
+        host: `${BACKEND_HOST}:${BACKEND_PORT}`,
+      }
+    }, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('error', (err) => {
+      console.error('Backend proxy error:', err.message);
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Backend unreachable: ' + err.message }));
+      }
+    });
+
+    req.pipe(proxyReq);
+    return;
+  }
+
   let filePath = path.join(DIST_DIR, reqPath);
 
   if (!filePath.startsWith(DIST_DIR)) {

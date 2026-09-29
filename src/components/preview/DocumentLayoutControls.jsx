@@ -6,8 +6,6 @@ import {
   IconMinus,
   IconPlus,
   IconCopy,
-  IconRefresh,
-  IconAlert,
   IconFile,
 } from '../ui/icons'
 
@@ -609,123 +607,7 @@ export default function DocumentLayoutControls({
           </div>
         </div>
       </div>
-
-      {/* ── SEKSI 5: Cetak Dua Sisi (Bolak-Balik / Duplex) ── */}
-      <div className="flex flex-col gap-2.5 border-t-2 border-dark-black-900/10 pt-3.5">
-        <div className="flex items-center justify-between">
-          <label className="font-figtree text-[13px] font-bold text-dark-black-900 flex items-center gap-1.5">
-            <IconRefresh size={14} />
-            <span>Cetak Dua Sisi (Bolak-Balik)</span>
-          </label>
-          <span className={`font-geist text-[11px] font-bold px-2 py-0.5 rounded-[5px] border ${
-            canDuplex
-              ? 'bg-lime-300 text-dark-black-900 border-dark-black-900/20'
-              : (duplex || manualDuplex)
-                ? 'bg-amber-300 text-dark-black-900 border-dark-black-900/20'
-                : 'bg-vanilla-300 text-dark-black-900/70 border-dark-black-900/20'
-          }`}>
-            {canDuplex
-              ? 'Hardware Otomatis'
-              : (duplex || manualDuplex)
-                ? 'Manual Duplex Aktif'
-                : 'Printer Simplex (Manual)'}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          {/* 1. Satu Sisi */}
-          <button
-            type="button"
-            onClick={() => {
-              if (onToggleDuplex) onToggleDuplex(false)
-              if (onToggleManualDuplex) onToggleManualDuplex(false)
-              update({ duplexMode: 'simplex' })
-            }}
-            className={`p-2.5 rounded-[10px] border-2 font-figtree text-left transition-all cursor-pointer ${
-              !duplex && !manualDuplex
-                ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-xs'
-                : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900'
-            }`}
-          >
-            <div className="font-bold text-[12px]">Satu Sisi</div>
-            <div className={`text-[10.5px] ${!duplex && !manualDuplex ? 'text-lime-300/80' : 'text-dark-black-900/60'}`}>
-              Cetak normal lembar per lembar
-            </div>
-          </button>
-
-          {/* 2. Bolak-Balik Sisi Panjang (Buku) */}
-          <button
-            type="button"
-            onClick={() => {
-              if (canDuplex) {
-                if (onToggleDuplex) onToggleDuplex(true)
-                if (onToggleManualDuplex) onToggleManualDuplex(false)
-              } else {
-                if (onToggleManualDuplex) onToggleManualDuplex(true)
-                if (onToggleDuplex) onToggleDuplex(false)
-              }
-              update({ duplexMode: 'long' })
-            }}
-            className={`p-2.5 rounded-[10px] border-2 font-figtree text-left transition-all cursor-pointer ${
-              (duplex || manualDuplex) && config.duplexMode === 'long'
-                ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-xs'
-                : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900'
-            }`}
-          >
-            <div className="font-bold text-[12px]">Sisi Panjang</div>
-            <div className={`text-[10.5px] ${(duplex || manualDuplex) && config.duplexMode === 'long' ? 'text-lime-300/80' : 'text-dark-black-900/60'}`}>
-              Balik sisi panjang (Buku/Makalah)
-            </div>
-          </button>
-
-          {/* 3. Bolak-Balik Sisi Pendek (Kalender) */}
-          <button
-            type="button"
-            onClick={() => {
-              if (canDuplex) {
-                if (onToggleDuplex) onToggleDuplex(true)
-                if (onToggleManualDuplex) onToggleManualDuplex(false)
-              } else {
-                if (onToggleManualDuplex) onToggleManualDuplex(true)
-                if (onToggleDuplex) onToggleDuplex(false)
-              }
-              update({ duplexMode: 'short' })
-            }}
-            className={`p-2.5 rounded-[10px] border-2 font-figtree text-left transition-all cursor-pointer ${
-              (duplex || manualDuplex) && config.duplexMode === 'short'
-                ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-xs'
-                : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900'
-            }`}
-          >
-            <div className="font-bold text-[12px]">Sisi Pendek</div>
-            <div className={`text-[10.5px] ${(duplex || manualDuplex) && config.duplexMode === 'short' ? 'text-lime-300/80' : 'text-dark-black-900/60'}`}>
-              Balik sisi pendek (Kalender/Blok)
-            </div>
-          </button>
-        </div>
-
-        {/* Panduan Manual Duplex untuk printer non-duplex hardware seperti Epson L3210 */}
-        {!canDuplex && (
-          <div className="flex items-start gap-2 p-2.5 bg-amber-50 border border-amber-300 rounded-[10px] text-amber-900">
-            <IconAlert size={15} className="mt-0.5 shrink-0 text-amber-600" />
-            <div className="text-[11.5px] font-figtree leading-snug">
-              {(duplex || manualDuplex) ? (
-                <>
-                  <span className="font-bold">Panduan Manual Duplex Aktif: </span>
-                  Sistem akan otomatis mencetak halaman ganjil terlebih dahulu, lalu menampilkan jendela panduan untuk membalik tumpukan kertas di baki printer sebelum mencetak halaman genap.
-                </>
-              ) : (
-                <>
-                  <span className="font-bold">Printer Simplex: </span>
-                  Klik <strong>Sisi Panjang</strong> atau <strong>Sisi Pendek</strong> di atas untuk mencetak bolak-balik secara bertahap (ganjil lalu genap).
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* ── SEKSI 6: Margin Kertas (Page Margins) ── */}
+      {/* ── SEKSI 5: Margin Kertas (Page Margins) ── */}
       <div className="flex flex-col gap-2.5 border-t-2 border-dark-black-900/10 pt-3.5">
         <div className="flex items-center justify-between">
           <label className="font-figtree text-[13px] font-bold text-dark-black-900 flex items-center gap-1.5">

@@ -12,6 +12,7 @@ import {
   IconRotateCw,
   IconOrientationPortrait,
   IconOrientationLandscape,
+  IconStamp,
 } from '../ui/icons'
 import {
   calculateImageLayout,
@@ -19,6 +20,88 @@ import {
   ALIGNMENT_GRID,
 } from '../../utils/imageLayoutHelper'
 import { DEFAULT_DOC_CONFIG } from './DocumentLayoutControls'
+
+export function WatermarkOverlay({ watermark, layout = 'center', opacity = 0.30 }) {
+  if (!watermark) return null
+
+  const effOpacity = typeof opacity === 'number' && opacity > 0 ? opacity : 0.30
+
+  if (layout === 'tiled' || layout === 'repeat') {
+    return (
+      <div
+        className="absolute inset-0 grid grid-cols-2 grid-rows-3 sm:grid-cols-3 sm:grid-rows-3 gap-4 p-4 pointer-events-none z-30 overflow-hidden select-none items-center justify-items-center"
+        style={{ opacity: effOpacity }}
+      >
+        {Array.from({ length: 9 }).map((_, i) => (
+          <span
+            key={i}
+            className="font-figtree font-black uppercase text-dark-black-900 tracking-widest text-[13px] sm:text-[16px] -rotate-30 whitespace-nowrap"
+            style={{ letterSpacing: '0.15em' }}
+          >
+            {watermark}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  let posClasses = 'items-center justify-center'
+  let textClasses = 'rotate-0 text-[30px] sm:text-[42px] md:text-[50px]'
+
+  switch (layout) {
+    case 'center':
+    case 'middle':
+      posClasses = 'items-center justify-center'
+      textClasses = 'rotate-0 text-[30px] sm:text-[42px] md:text-[50px]'
+      break
+    case 'top':
+    case 'header':
+      posClasses = 'items-start justify-center pt-5 sm:pt-7'
+      textClasses = 'rotate-0 text-[16px] sm:text-[20px] md:text-[24px]'
+      break
+    case 'bottom':
+    case 'footer':
+      posClasses = 'items-end justify-center pb-5 sm:pb-7'
+      textClasses = 'rotate-0 text-[16px] sm:text-[20px] md:text-[24px]'
+      break
+    case 'top-left':
+      posClasses = 'items-start justify-start p-5 sm:p-7'
+      textClasses = 'rotate-0 text-[14px] sm:text-[17px] text-left'
+      break
+    case 'top-right':
+      posClasses = 'items-start justify-end p-5 sm:p-7'
+      textClasses = 'rotate-0 text-[14px] sm:text-[17px] text-right'
+      break
+    case 'bottom-left':
+      posClasses = 'items-end justify-start p-5 sm:p-7'
+      textClasses = 'rotate-0 text-[14px] sm:text-[17px] text-left'
+      break
+    case 'bottom-right':
+      posClasses = 'items-end justify-end p-5 sm:p-7'
+      textClasses = 'rotate-0 text-[14px] sm:text-[17px] text-right'
+      break
+    case 'diagonal':
+    case 'center-diagonal':
+    default:
+      posClasses = 'items-center justify-center'
+      textClasses = '-rotate-45 text-[32px] sm:text-[44px] md:text-[52px]'
+      break
+  }
+
+  return (
+    <div
+      className={`absolute inset-0 flex pointer-events-none z-30 overflow-hidden select-none ${posClasses}`}
+      style={{ opacity: effOpacity }}
+    >
+      <span
+        className={`font-figtree font-black uppercase text-dark-black-900 tracking-widest whitespace-nowrap max-w-[90%] truncate ${textClasses}`}
+        style={{ letterSpacing: '0.2em' }}
+      >
+        {watermark}
+      </span>
+    </div>
+  )
+}
 
 /**
  * High-fidelity interactive print sheet preview component.
@@ -38,6 +121,8 @@ export default function PrintSheetPreview({
   duplex = false,
   nUp = 1,
   watermark = '',
+  watermarkLayout = 'center',
+  watermarkOpacity = 0.30,
   mediaType = 'Plain Paper',
   inputTray = 'Auto Select',
   onPrevPage,
@@ -560,16 +645,7 @@ export default function PrintSheetPreview({
             )}
 
             {/* Watermark Overlay */}
-            {watermark && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 overflow-hidden select-none">
-                <span
-                  className="font-figtree font-black uppercase text-dark-black-900/20 tracking-widest text-[36px] sm:text-[46px] md:text-[54px] -rotate-45 whitespace-nowrap"
-                  style={{ letterSpacing: '0.2em' }}
-                >
-                  {watermark}
-                </span>
-              </div>
-            )}
+            <WatermarkOverlay watermark={watermark} layout={watermarkLayout} opacity={watermarkOpacity} />
 
             {/* Document Content */}
             {isImage && imgUrl && imageLayout ? (
@@ -774,7 +850,8 @@ export default function PrintSheetPreview({
           )}
           {watermark && (
             <span className="inline-flex items-center gap-1 bg-watermelon-500/20 border border-dark-black-900/30 px-2.5 py-1 rounded-[6px] font-bold text-dark-black-900">
-              <span>Stamp: "{watermark}"</span>
+              <IconStamp size={13} className="text-dark-black-900" />
+              <span>Stamp: "{watermark}" ({watermarkLayout === 'center' ? 'Tengah' : watermarkLayout === 'diagonal' ? 'Diagonal' : watermarkLayout})</span>
             </span>
           )}
           {mediaType && mediaType !== 'Plain Paper' && (

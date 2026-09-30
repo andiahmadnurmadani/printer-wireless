@@ -434,3 +434,41 @@ export const IconOrientationLandscape = ({ size = 18, className = '' }) => (
   </svg>
 )
 
+export const IconStamp = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M5 22h14" />
+    <path d="M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11a2.5 2.5 0 0 0-1.77.73l-1.44 1.44A1.5 1.5 0 0 0 3 16.23V19h18v-2.77a1.5 1.5 0 0 0-.29-1.06z" />
+    <path d="M14 13V8a2 2 0 0 0-2-2h0a2 2 0 0 0-2 2v5" />
+    <path d="M12 2a3 3 0 0 0-3 3v1h6V5a3 3 0 0 0-3-3z" />
+  </svg>
+)
+
+export const IconLayoutCenter = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="7" y1="12" x2="17" y2="12" strokeWidth={2.4} />
+  </svg>
+)
+
+export const IconLayoutDiagonal = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="6" y1="18" x2="18" y2="6" strokeWidth={2.4} />
+  </svg>
+)
+
+export const IconLayoutTop = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="7" y1="7" x2="17" y2="7" strokeWidth={2.4} />
+  </svg>
+)
+
+export const IconLayoutBottom = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="7" y1="17" x2="17" y2="17" strokeWidth={2.4} />
+  </svg>
+)
+
+

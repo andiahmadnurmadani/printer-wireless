@@ -10,6 +10,7 @@ import {
   ALIGNMENT_GRID,
 } from '../../utils/imageLayoutHelper'
 import { DEFAULT_DOC_CONFIG } from './DocumentLayoutControls'
+import { WatermarkOverlay } from './PrintSheetPreview'
 
 /**
  * Fullscreen / High-Res Final Print Inspection Modal
@@ -32,6 +33,8 @@ export default function FinalPrintModal({
   scaling,
   nUp = 1,
   watermark = '',
+  watermarkLayout = 'center',
+  watermarkOpacity = 0.30,
   selectedPrinter,
   onSubmitJob,
   imgConfig = DEFAULT_IMAGE_CONFIG,
@@ -328,16 +331,7 @@ export default function FinalPrintModal({
                   }`}
                 >
                   {/* Watermark Overlay */}
-                  {watermark && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 overflow-hidden select-none">
-                      <span
-                        className="font-figtree font-black uppercase text-dark-black-900/20 tracking-widest text-[46px] md:text-[68px] -rotate-45 whitespace-nowrap"
-                        style={{ letterSpacing: '0.2em' }}
-                      >
-                        {watermark}
-                      </span>
-                    </div>
-                  )}
+                  <WatermarkOverlay watermark={watermark} layout={watermarkLayout} opacity={watermarkOpacity} />
 
                   <div
                     style={{

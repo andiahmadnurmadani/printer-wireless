@@ -1688,8 +1688,10 @@ type createJobReq struct {
 	InputTray     string `json:"inputTray,omitempty"`
 	Borderless    bool   `json:"borderless,omitempty"`
 	Booklet       bool   `json:"booklet,omitempty"`
-	Watermark     string `json:"watermark,omitempty"`
-	ManualDuplex  bool   `json:"manualDuplex,omitempty"`
+	Watermark        string            `json:"watermark,omitempty"`
+	WatermarkLayout  string            `json:"watermarkLayout,omitempty"`
+	WatermarkOpacity float64           `json:"watermarkOpacity,omitempty"`
+	ManualDuplex     bool              `json:"manualDuplex,omitempty"`
 	DuplexStep    string `json:"duplexStep,omitempty"`
 	PrintAsImage  bool   `json:"printAsImage,omitempty"`
 	PPDSettings   map[string]string `json:"ppdSettings,omitempty"`
@@ -1933,8 +1935,10 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		InputTray:    req.InputTray,
 		Borderless:   req.Borderless,
 		Booklet:      req.Booklet,
-		Watermark:    req.Watermark,
-		ManualDuplex: req.ManualDuplex,
+		Watermark:        req.Watermark,
+		WatermarkLayout:  req.WatermarkLayout,
+		WatermarkOpacity: req.WatermarkOpacity,
+		ManualDuplex:     req.ManualDuplex,
 		DuplexStep:   req.DuplexStep,
 		PrintAsImage: req.PrintAsImage,
 		PPDSettings:  req.PPDSettings,
@@ -2009,7 +2013,7 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		filePath = rasterizeForPrint(filePath, s.log)
 	}
 	if strings.TrimSpace(opts.Watermark) != "" {
-		filePath = applyWatermark(filePath, opts.Watermark, s.log)
+		filePath = applyWatermark(filePath, opts.Watermark, opts.WatermarkLayout, opts.WatermarkOpacity, s.log)
 	}
 
 	// Send original file directly to CUPS. For PDFs, CUPS uses its native
@@ -2554,10 +2558,169 @@ func rasterizeForPrint(src string, log *log.Logger) string {
 	return src
 }
 
-// applyWatermark stamps text diagonally over every page using ghostscript's
-// EndPage hook. The panel has always had a watermark field; nothing rendered it
-// until now, so the setting silently did nothing.
-func applyWatermark(src, text string, log *log.Logger) string {
+// buildWatermarkPostScript generates a PostScript EndPage hook that accurately
+// measures the page bounds (clippath pathbbox) and text width per point. It scales
+// the font dynamically so the text fits completely within printable bounds and is
+// never cut off ("full"), placed according to layout ("center", "diagonal", "top",
+// "bottom", "top-left", "top-right", "bottom-left", "bottom-right", "tiled").
+func buildWatermarkPostScript(text, layout string, opacity float64) string {
+	// Neutralize PostScript escape chars
+	esc := strings.NewReplacer(`\`, `\\`, `(`, `\(`, `)`, `\)`).Replace(strings.ToValidUTF8(text, "?"))
+	esc = strings.ReplaceAll(esc, "\r", "")
+	esc = strings.ReplaceAll(esc, "\n", " ")
+
+	if opacity <= 0 || opacity > 1.0 {
+		opacity = 0.30
+	}
+	gray := 1.0 - (opacity * 0.70)
+	if gray < 0.20 {
+		gray = 0.20
+	} else if gray > 0.95 {
+		gray = 0.95
+	}
+	grayStr := fmt.Sprintf("%.2f", gray)
+
+	layout = strings.ToLower(strings.TrimSpace(layout))
+	if layout == "" {
+		layout = "center"
+	}
+
+	var snippet string
+	switch layout {
+	case "center", "middle":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.82 mul def
+			/fSize 48 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			pCx pCy translate
+			actualW 2 div neg fSize 0.35 mul neg moveto
+			(%s) show`, esc)
+
+	case "top", "header":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.85 mul def
+			/fSize 22 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			pCx urY 45 sub translate
+			actualW 2 div neg fSize 0.35 mul neg moveto
+			(%s) show`, esc)
+
+	case "bottom", "footer":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.85 mul def
+			/fSize 22 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			pCx llY 45 add translate
+			actualW 2 div neg fSize 0.35 mul neg moveto
+			(%s) show`, esc)
+
+	case "top-left":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.45 mul def
+			/fSize 18 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			llX 40 add urY 45 sub moveto
+			(%s) show`, esc)
+
+	case "top-right":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.45 mul def
+			/fSize 18 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			urX 40 sub actualW sub urY 45 sub moveto
+			(%s) show`, esc)
+
+	case "bottom-left":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.45 mul def
+			/fSize 18 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			llX 40 add llY 45 add moveto
+			(%s) show`, esc)
+
+	case "bottom-right":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.45 mul def
+			/fSize 18 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			urX 40 sub actualW sub llY 45 add moveto
+			(%s) show`, esc)
+
+	case "tiled", "repeat":
+		snippet = fmt.Sprintf(`
+			/maxW pW 0.30 mul def
+			/fSize 18 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			0.22 0.28 0.78 {
+				/yFrac exch def
+				0.25 0.50 0.75 {
+					/xFrac exch def
+					gsave
+					pW xFrac mul pH yFrac mul translate
+					35 rotate
+					actualW 2 div neg fSize 0.35 mul neg moveto
+					(%s) show
+					grestore
+				} for
+			} for`, esc)
+
+	case "diagonal", "center-diagonal":
+		fallthrough
+	default:
+		snippet = fmt.Sprintf(`
+			/maxW pW pW mul pH pH mul add sqrt 0.72 mul def
+			/fSize 52 def
+			fSize w1 mul maxW gt { /fSize maxW w1 div def } if
+			/actualW fSize w1 mul def
+			/Helvetica-Bold findfont fSize scalefont setfont
+			pCx pCy translate
+			45 rotate
+			actualW 2 div neg fSize 0.35 mul neg moveto
+			(%s) show`, esc)
+	}
+
+	return fmt.Sprintf(`<< /EndPage {
+		pop pop
+		gsave
+		%s setgray
+		clippath pathbbox
+		/urY exch def
+		/urX exch def
+		/llY exch def
+		/llX exch def
+		/pW urX llX sub def
+		/pH urY llY sub def
+		/pCx llX urX add 2 div def
+		/pCy llY urY add 2 div def
+		/Helvetica-Bold findfont 1 scalefont setfont
+		(%s) stringwidth pop /w1 exch def
+		w1 0 le { /w1 1 def } if
+		%s
+		grestore
+		true
+	} >> setpagedevice`, grayStr, esc, snippet)
+}
+
+// applyWatermark stamps text onto every page using ghostscript's EndPage hook.
+// The text is scaled and positioned dynamically based on page dimensions and layout
+// so it is never cut off and matches the preview position.
+func applyWatermark(src, text, layout string, opacity float64, log *log.Logger) string {
 	text = strings.TrimSpace(text)
 	if text == "" || !strings.EqualFold(filepath.Ext(src), ".pdf") {
 		return src
@@ -2567,11 +2730,7 @@ func applyWatermark(src, text string, log *log.Logger) string {
 		return src
 	}
 	dst := strings.TrimSuffix(src, ".pdf") + ".wm.pdf"
-	// PostScript string escaping: backslash and parentheses must be neutralised.
-	esc := strings.NewReplacer(`\`, `\\`, `(`, `\(`, `)`, `\)`).Replace(strings.ToValidUTF8(text, "?"))
-	hook := fmt.Sprintf(
-		"<< /EndPage { pop pop gsave 0.86 setgray /Helvetica-Bold findfont 72 scalefont setfont 45 rotate 150 330 moveto (%s) show grestore true } >> setpagedevice",
-		esc)
+	hook := buildWatermarkPostScript(text, layout, opacity)
 	args := []string{
 		"-q", "-dBATCH", "-dNOPAUSE", "-dSAFER",
 		"-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.6",
@@ -2588,7 +2747,7 @@ func applyWatermark(src, text string, log *log.Logger) string {
 	}
 	if chk, err := os.Stat(dst); err == nil && chk.Size() > 0 {
 		if log != nil {
-			log.Printf("watermark: stamped %q on %s", text, filepath.Base(src))
+			log.Printf("watermark: stamped %q (layout=%s) on %s", text, layout, filepath.Base(src))
 		}
 		return dst
 	}

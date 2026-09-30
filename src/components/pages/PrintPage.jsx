@@ -8,6 +8,7 @@ import { FileTypeBadge } from '../ui/Badges'
 import {
   IconUpload, IconFile, IconImage, IconTxt, IconCheck, IconPrinter,
   IconChevronDown, IconEye, IconAlert, IconCamera, IconLock,
+  IconStamp, IconLayoutCenter, IconLayoutDiagonal, IconLayoutGrid,
 } from '../ui/icons'
 import { getPaperDimensions, paperOption, PAPER_SIZES } from '../../utils/paperDimensions'
 import { loadPdfDocument } from '../../utils/pdfHelper'
@@ -127,6 +128,8 @@ export default function PrintPage({ onNavigate }) {
   const [borderless, setBorderless] = useState(false)
   const [booklet, setBooklet] = useState(false)
   const [watermark, setWatermark] = useState('')
+  const [watermarkLayout, setWatermarkLayout] = useState('center')
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.30)
   const [printAsImage, setPrintAsImage] = useState(false)
   const [manualDuplex, setManualDuplex] = useState(false)
   const [manualDuplexModalOpen, setManualDuplexModalOpen] = useState(false)
@@ -519,6 +522,8 @@ export default function PrintPage({ onNavigate }) {
         borderless,
         booklet,
         watermark,
+        watermarkLayout,
+        watermarkOpacity,
         manualDuplex: true,
         duplexStep: 'odd',
         secureRelease,
@@ -586,6 +591,8 @@ export default function PrintPage({ onNavigate }) {
       borderless,
       booklet,
       watermark,
+      watermarkLayout,
+      watermarkOpacity,
       printAsImage,
       ppdSettings,
       manualDuplex: false,
@@ -640,6 +647,8 @@ export default function PrintPage({ onNavigate }) {
       borderless,
       booklet,
       watermark,
+      watermarkLayout,
+      watermarkOpacity,
       manualDuplex: true,
       duplexStep: 'even',
     }
@@ -812,6 +821,8 @@ export default function PrintPage({ onNavigate }) {
                 copies={copies}
                 nUp={nUp}
                 watermark={watermark}
+                watermarkLayout={watermarkLayout}
+                watermarkOpacity={watermarkOpacity}
                 mediaType={mediaType}
                 inputTray={inputTray}
                 onPrevPage={() => setCurrentPage((p) => Math.max(1, p - 1))}
@@ -1169,13 +1180,24 @@ export default function PrintPage({ onNavigate }) {
                   <span className="font-figtree text-[13px] font-bold text-dark-black-900">
                     Watermark Text Stamp
                   </span>
-                  <input
-                    type="text"
-                    value={watermark}
-                    onChange={(e) => setWatermark(e.target.value)}
-                    placeholder="e.g. DRAFT, CONFIDENTIAL, LUNAS, RAHASIA"
-                    className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 font-geist font-bold text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors"
-                  />
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={watermark}
+                      onChange={(e) => setWatermark(e.target.value)}
+                      placeholder="e.g. DRAFT, CONFIDENTIAL, LUNAS, RAHASIA"
+                      className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[11px] px-3.5 py-2.5 pr-14 font-geist font-bold text-[14px] text-dark-black-900 focus:outline-none focus:bg-lime-300/30 transition-colors"
+                    />
+                    {watermark && (
+                      <button
+                        type="button"
+                        onClick={() => setWatermark('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-dark-black-900/60 hover:text-dark-black-900 text-[11px] font-figtree font-bold px-2 py-1 rounded-[6px] bg-dark-black-900/10 hover:bg-dark-black-900/20 transition-colors cursor-pointer"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -1206,6 +1228,132 @@ export default function PrintPage({ onNavigate }) {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Layout & Positioning Settings */}
+                <div className="flex flex-col gap-2 pt-2 border-t border-dark-black-900/15">
+                  <div className="flex items-center justify-between">
+                    <span className="font-figtree text-[13px] font-bold text-dark-black-900">
+                      Tata Letak / Posisi Watermark
+                    </span>
+                    <span className="text-[11.5px] font-figtree font-medium text-dark-black-900/60">
+                      {watermarkLayout === 'center'
+                        ? 'Tengah (Horizontal)'
+                        : watermarkLayout === 'diagonal'
+                        ? 'Diagonal (45°)'
+                        : watermarkLayout === 'top'
+                        ? 'Atas (Header)'
+                        : watermarkLayout === 'bottom'
+                        ? 'Bawah (Footer)'
+                        : watermarkLayout === 'top-left'
+                        ? 'Kiri Atas'
+                        : watermarkLayout === 'top-right'
+                        ? 'Kanan Atas'
+                        : watermarkLayout === 'bottom-left'
+                        ? 'Kiri Bawah'
+                        : watermarkLayout === 'bottom-right'
+                        ? 'Kanan Bawah'
+                        : 'Pola Berulang (Grid)'}
+                    </span>
+                  </div>
+
+                  {/* Primary Layout Modes */}
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'center', label: 'Tengah', desc: 'Horizontal', icon: IconLayoutCenter },
+                      { id: 'diagonal', label: 'Diagonal', desc: 'Miring 45°', icon: IconLayoutDiagonal },
+                      { id: 'tiled', label: 'Berulang', desc: 'Grid Pola', icon: IconLayoutGrid },
+                    ].map((item) => {
+                      const IconComp = item.icon
+                      const isActive = watermarkLayout === item.id
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setWatermarkLayout(item.id)}
+                          className={`flex flex-col items-center justify-center p-2.5 rounded-[11px] border-2 transition-all cursor-pointer ${
+                            isActive
+                              ? 'bg-lime-300 text-dark-black-900 border-dark-black-900 shadow-xs font-bold'
+                              : 'bg-vanilla-100 text-dark-black-900/80 border-dark-black-900/30 hover:border-dark-black-900 hover:bg-white'
+                          }`}
+                        >
+                          <IconComp size={20} className="mb-1" />
+                          <span className="text-[12px] font-figtree font-bold leading-tight">{item.label}</span>
+                          <span className="text-[10px] font-figtree opacity-75">{item.desc}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {/* Edge & Corner Positions */}
+                  <div className="flex flex-col gap-1.5 mt-1">
+                    <span className="text-[11.5px] font-figtree font-medium text-dark-black-900/60">
+                      Posisi Sudut & Batas:
+                    </span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[
+                        { id: 'top-left', label: 'Kiri Atas' },
+                        { id: 'top', label: 'Atas (Header)' },
+                        { id: 'top-right', label: 'Kanan Atas' },
+                        { id: 'bottom-left', label: 'Kiri Bawah' },
+                        { id: 'bottom', label: 'Bawah (Footer)' },
+                        { id: 'bottom-right', label: 'Kanan Bawah' },
+                      ].map((pos) => (
+                        <button
+                          key={pos.id}
+                          type="button"
+                          onClick={() => setWatermarkLayout(pos.id)}
+                          className={`px-2 py-1.5 rounded-[8px] border text-[11px] font-figtree font-medium transition-all text-center cursor-pointer ${
+                            watermarkLayout === pos.id
+                              ? 'bg-dark-black-900 text-lime-300 border-dark-black-900 font-bold shadow-xs'
+                              : 'bg-vanilla-100 text-dark-black-900 border-dark-black-900/25 hover:border-dark-black-900'
+                          }`}
+                        >
+                          {pos.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Opacity Settings */}
+                <div className="flex flex-col gap-1.5 pt-2 border-t border-dark-black-900/15">
+                  <div className="flex items-center justify-between">
+                    <span className="font-figtree text-[13px] font-bold text-dark-black-900">
+                      Kepekatan Watermark
+                    </span>
+                    <span className="text-[11.5px] font-figtree font-medium text-dark-black-900/60">
+                      {Math.round(watermarkOpacity * 100)}%
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { val: 0.15, label: 'Samar (15%)' },
+                      { val: 0.30, label: 'Sedang (30%)' },
+                      { val: 0.50, label: 'Jelas (50%)' },
+                    ].map((op) => (
+                      <button
+                        key={op.val}
+                        type="button"
+                        onClick={() => setWatermarkOpacity(op.val)}
+                        className={`py-1.5 px-2 rounded-[8px] border text-[11.5px] font-figtree font-bold transition-all text-center cursor-pointer ${
+                          watermarkOpacity === op.val
+                            ? 'bg-dark-black-900 text-lime-300 border-dark-black-900 shadow-xs'
+                            : 'bg-vanilla-100 text-dark-black-900 border-dark-black-900/30 hover:border-dark-black-900'
+                        }`}
+                      >
+                        {op.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Auto-scaling info notice */}
+                <div className="flex items-start gap-2 p-3 bg-vanilla-200/60 border border-dark-black-900/20 rounded-[11px] text-[11.5px] font-figtree text-dark-black-900/80">
+                  <IconStamp size={16} className="text-dark-black-900 shrink-0 mt-0.5" />
+                  <span>
+                    Ukuran teks watermark otomatis diskalakan proporsional sesuai batas halaman agar tidak terpotong tepi kertas fisik.
+                  </span>
                 </div>
               </div>
             )}
@@ -1354,6 +1502,8 @@ export default function PrintPage({ onNavigate }) {
         scaling={effectiveScaling}
         nUp={nUp}
         watermark={watermark}
+        watermarkLayout={watermarkLayout}
+        watermarkOpacity={watermarkOpacity}
         selectedPrinter={selectedPrinter}
         onSubmitJob={handleSubmit}
         imgConfig={imgConfig}

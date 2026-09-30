@@ -38,10 +38,12 @@ type JobOptions struct {
 	Collate      bool   // collated vs uncollated
 	MediaType    string // Plain, Photo, Glossy, Matte, Envelope...
 	InputTray    string // Main, Rear, Manual, Auto...
-	Borderless   bool   // true = full bleed photo
-	Booklet      bool   // true = saddle-stitch booklet imposition
-	Watermark    string // custom watermark text
-	ManualDuplex bool   // true = manual odd/even duplex flow
+	Borderless       bool    // true = full bleed photo
+	Booklet          bool    // true = saddle-stitch booklet imposition
+	Watermark        string  // custom watermark text
+	WatermarkLayout  string  // custom watermark layout position ("center", "diagonal", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right", "tiled")
+	WatermarkOpacity float64 // watermark opacity (e.g. 0.15, 0.30, 0.50)
+	ManualDuplex     bool    // true = manual odd/even duplex flow
 	DuplexStep   string // "odd" | "even"
 	// PrintAsImage rasterizes the document before submission (the "print as
 	// image" escape hatch every normal print dialog offers).

@@ -51,6 +51,8 @@ type JobOptions struct {
 	// PPDSettings carries printer-specific PPD options (Brightness, Contrast,
 	// Saturation, ...) straight from the printer's own PPD choices.
 	PPDSettings map[string]string
+	Rotation     int
+	ScalePercent int
 }
 
 // NormalizeHost strips scheme/path from a CUPS URL -> "host:port".

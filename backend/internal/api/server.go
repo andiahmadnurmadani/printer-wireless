@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,8 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1942,31 +1939,14 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		DuplexStep:   req.DuplexStep,
 		PrintAsImage: req.PrintAsImage,
 		PPDSettings:  req.PPDSettings,
+		Rotation:     req.Rotation,
+		ScalePercent: req.ScalePercent,
 	}
 	if req.Duplex {
 		if strings.EqualFold(req.DuplexMode, "short") || strings.EqualFold(req.DuplexMode, "two-sided-short-edge") {
 			opts.Sides = "two-sided-short-edge"
 		} else {
 			opts.Sides = "two-sided-long-edge"
-		}
-	}
-	if req.Rotation == 90 {
-		if strings.EqualFold(opts.Orientation, "portrait") {
-			opts.Orientation = "landscape"
-		} else {
-			opts.Orientation = "reverse-portrait"
-		}
-	} else if req.Rotation == 180 {
-		if strings.EqualFold(opts.Orientation, "portrait") {
-			opts.Orientation = "reverse-portrait"
-		} else {
-			opts.Orientation = "reverse-landscape"
-		}
-	} else if req.Rotation == 270 {
-		if strings.EqualFold(opts.Orientation, "portrait") {
-			opts.Orientation = "reverse-landscape"
-		} else {
-			opts.Orientation = "portrait"
 		}
 	}
 	if !req.Color {
@@ -1977,34 +1957,17 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	_ = s.store.PatchJobStatus(jobID, "processing")
 
 	isGray := opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" || !req.Color
-	origExt := strings.ToLower(filepath.Ext(filePath))
-	isImg := origExt == ".png" || origExt == ".jpg" || origExt == ".jpeg" || origExt == ".webp" ||
-		origExt == ".bmp" || origExt == ".gif" || origExt == ".tif" || origExt == ".tiff" ||
-		origExt == ".heic" || origExt == ".svg"
 
-	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling)
+	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling, req.ScalePercent, req.Rotation)
 	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
 		opts.FileType = "application/pdf"
-		if isImg {
-			// For images, normalizeDocument has already rotated and scaled the raster
-			// to match the physical printer feed (595x842). Setting opts.Orientation to
-			// portrait prevents CUPS pdftopdf from applying a duplicate 90-degree rotation.
-			opts.Orientation = "portrait"
-		} else if strings.EqualFold(opts.Orientation, "landscape") {
-			// If PDF page is already in landscape dimensions (w > h), avoid CUPS double-rotation
-			if idCmd, idErr := exec.LookPath("identify"); idErr == nil {
-				if out, err := exec.Command(idCmd, "-format", "%w %h", filePath+"[0]").Output(); err == nil {
-					parts := strings.Fields(strings.TrimSpace(string(out)))
-					if len(parts) == 2 {
-						w, _ := strconv.Atoi(parts[0])
-						h, _ := strconv.Atoi(parts[1])
-						if w > h {
-							opts.Orientation = "portrait"
-						}
-					}
-				}
-			}
-		}
+		// Both rasterized images and PDFs are now formatted and oriented by normalizeDocument
+		// to match the printer's physical sheet feed (e.g. 595x842 for A4 portrait feed).
+		// Setting opts.Orientation to portrait prevents CUPS pdftopdf from applying
+		// a duplicate 90-degree rotation or distorting geometry. Setting opts.Scaling to
+		// "Actual size" ensures CUPS sends the exact 1:1 formatted vectors without overriding.
+		opts.Orientation = "portrait"
+		opts.Scaling = "Actual size"
 	}
 
 	// Optional finishing passes, in the order a normal print dialog applies them:
@@ -2085,6 +2048,10 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 				// Pass scaling to local lp
 				if discovery.IsFillScaling(opts.Scaling, opts.Borderless) {
 					flags = append(flags, "-o", "print-scaling=fill")
+				} else if strings.EqualFold(opts.Scaling, "actual size") {
+					flags = append(flags, "-o", "print-scaling=none")
+				} else if strings.EqualFold(opts.Scaling, "shrink to fit") {
+					flags = append(flags, "-o", "print-scaling=auto-fit")
 				} else {
 					flags = append(flags, "-o", "fit-to-page", "-o", "print-scaling=fit")
 				}
@@ -2350,7 +2317,7 @@ func shellQuote(s string) string {
 // normalizeDocument converts images (PNG, JPG, JPEG, WEBP, BMP) or raw documents
 // into standard A4 print-ready PDFs, fixes PDF rotation bugs with Ghostscript,
 // and if isGray is true, converts all color spaces into high-contrast DeviceGray.
-func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string) string {
+func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string, scalePercent int, rotation int) string {
 	ext := strings.ToLower(filepath.Ext(src))
 	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
 		ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff" ||
@@ -2467,59 +2434,166 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 		return src
 	}
 
-	// 2) Handling PDF documents: Normalize PDF to standard PostScript Level 3 then clean PDF via Poppler + Ghostscript.
-	// This standardizes all page boxes (A4/Letter), fixes Type 3 font box quirks from Chromium/Skia producers,
-	// and eliminates all float /Rotate or non-standard crop-box distortions without rasterizing to images.
-	psPath := strings.TrimSuffix(src, ".pdf") + ".clean.ps"
-	cleanPDF := strings.TrimSuffix(src, ".pdf") + ".clean.pdf"
+	// 2) Handling PDF documents: format geometry, orientation, and scaling
+	// accurately to match the physical printer sheet feed (e.g. 595x842 pt for A4),
+	// respecting user custom scale (e.g. 50%), orientation (Landscape/Portrait),
+	// and rotation without losing vector fidelity.
+	return formatPDFForPrint(src, log, media, orientation, scaling, scalePercent, rotation, isGray)
+}
 
-	pdftopsCmd, err1 := exec.LookPath("pdftops")
-	gsCmd, err2 := exec.LookPath("gs")
-
-	if err1 == nil && err2 == nil {
-		targetPaper := media
-		if targetPaper == "" {
-			targetPaper = "A4"
-		}
-	// Convert to clean Level 3 PostScript with explicit paper targeting and page
-	// expansion. pdftops only understands a handful of paper names, so unknown
-	// sizes omit -paper instead of failing the whole standardization step.
-	psArgs := []string{"-level3", "-expand"}
-	if name := discovery.PDFTOPSPaper(targetPaper); name != "" {
-		psArgs = append(psArgs, "-paper", name)
+func minInt(a, b int) int {
+	if a < b {
+		return a
 	}
-	psArgs = append(psArgs, src, psPath)
-	cmdPS := exec.Command(pdftopsCmd, psArgs...)
-		if out, err := cmdPS.CombinedOutput(); err == nil {
-			// Convert PostScript back to pristine, standardized PDF
-			argsGS := []string{
-				"-sDEVICE=pdfwrite",
-				"-dCompatibilityLevel=1.4",
-				"-dPDFSETTINGS=/printer",
-				"-dNOPAUSE", "-dQUIET", "-dBATCH",
-				"-sOutputFile=" + cleanPDF,
-				psPath,
-			}
-			cmdGS := exec.Command(gsCmd, argsGS...)
-			if outGS, errGS := cmdGS.CombinedOutput(); errGS == nil {
-				_ = os.Remove(psPath)
-				if fi, err := os.Stat(cleanPDF); err == nil && fi.Size() > 0 {
-					if log != nil {
-						log.Printf("normalizeDocument: standardized PDF %s → %s via pdftops+gs", filepath.Base(src), filepath.Base(cleanPDF))
-					}
-					return cleanPDF
-				}
-			} else {
-				_ = os.Remove(psPath)
-				if log != nil {
-					log.Printf("normalizeDocument: gs ps2pdf error (%v): %s", errGS, strings.TrimSpace(string(outGS)))
-				}
-			}
-		} else if log != nil {
-			log.Printf("normalizeDocument: pdftops error (%v): %s", err, strings.TrimSpace(string(out)))
-		}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// formatPDFForPrint formats a PDF to match the target physical sheet feed geometry
+// while honoring orientation (Landscape/Portrait), custom scaling (e.g. 50%),
+// rotation, and centering without losing vector quality.
+func formatPDFForPrint(src string, log *log.Logger, media string, orientation string, scaling string, scalePercent int, rotation int, isGray bool) string {
+	if !strings.EqualFold(filepath.Ext(src), ".pdf") {
+		return src
+	}
+	gs, err := exec.LookPath("gs")
+	if err != nil {
+		return src
 	}
 
+	if media == "" {
+		media = "A4"
+	}
+	ptW, ptH := discovery.PageDimensionsPoints(media)
+	if ptW <= 0 || ptH <= 0 {
+		ptW, ptH = 595, 842 // fallback A4
+	}
+
+	// Physical desktop printer feed is short edge first (portrait geometry)
+	sheetW := minInt(ptW, ptH)
+	sheetH := maxInt(ptW, ptH)
+
+	isLandscape := strings.EqualFold(strings.TrimSpace(orientation), "landscape")
+
+	// Canvas dimensions where document is laid out
+	var canvasW, canvasH int
+	if isLandscape {
+		canvasW = sheetH
+		canvasH = sheetW
+	} else {
+		canvasW = sheetW
+		canvasH = sheetH
+	}
+
+	docW, docH, ok := pageDimensionsPoints(src)
+	if !ok || docW <= 0 || docH <= 0 {
+		docW, docH = canvasW, canvasH
+	}
+
+	// Calculate scale factor
+	var s float64
+	if strings.EqualFold(scaling, "custom") || (scalePercent > 0 && scalePercent != 100) {
+		if scalePercent <= 0 {
+			scalePercent = 100
+		}
+		s = float64(scalePercent) / 100.0
+	} else if strings.EqualFold(scaling, "actual size") || strings.EqualFold(scaling, "actual") {
+		s = 1.0
+	} else if strings.EqualFold(scaling, "shrink to fit") || strings.EqualFold(scaling, "shrink") {
+		if docW > canvasW || docH > canvasH {
+			s = minFloat(float64(canvasW)/float64(docW), float64(canvasH)/float64(docH))
+		} else {
+			s = 1.0
+		}
+	} else if discovery.IsFillScaling(scaling, false) {
+		s = maxFloat(float64(canvasW)/float64(docW), float64(canvasH)/float64(docH))
+	} else {
+		// Default: "fit to page" / "fit"
+		s = minFloat(float64(canvasW)/float64(docW), float64(canvasH)/float64(docH))
+	}
+
+	scaledW := float64(docW) * s
+	scaledH := float64(docH) * s
+	dx := (float64(canvasW) - scaledW) / 2.0
+	dy := (float64(canvasH) - scaledH) / 2.0
+
+	// Build BeginPage PostScript hook
+	var hook strings.Builder
+	hook.WriteString("<< /BeginPage { pop ")
+
+	if isLandscape {
+		// Map landscape canvas onto physical portrait feed sheet (rotate 270 and translate)
+		hook.WriteString(fmt.Sprintf("0 %d translate 270 rotate ", sheetH))
+	}
+
+	rot := (rotation%360 + 360) % 360
+	if rot != 0 {
+		cx := float64(canvasW) / 2.0
+		cy := float64(canvasH) / 2.0
+		hook.WriteString(fmt.Sprintf("%.2f %.2f translate %d rotate %.2f %.2f translate ", cx, cy, rot, -cx, -cy))
+	}
+
+	hook.WriteString(fmt.Sprintf("%.4f %.4f translate %.4f %.4f scale ", dx, dy, s, s))
+	hook.WriteString("} >> setpagedevice")
+
+	dstPDF := strings.TrimSuffix(src, ".pdf") + ".fmt.pdf"
+
+	args := []string{
+		"-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
+		"-sDEVICE=pdfwrite",
+		"-dCompatibilityLevel=1.6",
+		"-dAutoRotatePages=/None",
+		"-dFIXEDMEDIA",
+		fmt.Sprintf("-dDEVICEWIDTHPOINTS=%d", sheetW),
+		fmt.Sprintf("-dDEVICEHEIGHTPOINTS=%d", sheetH),
+		"-sOutputFile=" + dstPDF,
+	}
+
+	if isGray {
+		args = append(args, "-sColorConversionStrategy=Gray", "-dProcessColorModel=/DeviceGray")
+	}
+
+	args = append(args, "-c", hook.String(), "-f", src)
+
+	cmd := exec.Command(gs, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if log != nil {
+			log.Printf("formatPDFForPrint: gs failed (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+		_ = os.Remove(dstPDF)
+		return src
+	}
+
+	if fi, err := os.Stat(dstPDF); err == nil && fi.Size() > 0 {
+		if log != nil {
+			log.Printf("formatPDFForPrint: formatted %s → %s (landscape=%v, sheet=%dx%d pt, doc=%dx%d pt, scale=%.3f, rot=%d, gray=%v)",
+				filepath.Base(src), filepath.Base(dstPDF), isLandscape, sheetW, sheetH, docW, docH, s, rot, isGray)
+		}
+		return dstPDF
+	}
+
+	_ = os.Remove(dstPDF)
 	return src
 }
 
@@ -2755,71 +2829,77 @@ func applyWatermark(src, text, layout string, opacity float64, log *log.Logger) 
 	return src
 }
 
-// ensurePrintablePDF normalizes PDF vectors via pdftops + gs at upload time,
-// standardizing all /Rotate and cropbox metadata so CUPS pdftopdf filter never crashes.
+// ensurePrintablePDF repairs producer metadata defects (notably non-integer
+// /Rotate values that crash cups-filters pdftopdf) WITHOUT touching page
+// geometry. It runs at upload time so preview, retry and dispatch all operate
+// on the repaired file.
+//
+// It deliberately does NOT force a paper size. The previous implementation ran
+// `pdftops -paper A4 -expand` and renamed the result over the uploaded file,
+// which baked every document to A4 before the user had even chosen a sheet —
+// so A5/Letter/4x6 selections could never be honoured. The document keeps its
+// own MediaBox here; CUPS applies the selected size via print-scaling.
 func ensurePrintablePDF(src string, log *log.Logger) string {
-	fi, err := os.Stat(src)
-	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
-		return src
-	}
-
-	pdftopsCmd, err1 := exec.LookPath("pdftops")
-	gsCmd, err2 := exec.LookPath("gs")
-	if err1 != nil || err2 != nil {
-		return src
-	}
-
-	psPath := strings.TrimSuffix(src, ".pdf") + ".tmp.ps"
-	cleanPDF := strings.TrimSuffix(src, ".pdf") + ".tmp.pdf"
-	defer os.Remove(psPath)
-
-	cmdPS := exec.Command(pdftopsCmd, "-level3", "-paper", "A4", "-expand", src, psPath)
-	if out, err := cmdPS.CombinedOutput(); err != nil {
-		if log != nil {
-			log.Printf("ensurePrintablePDF: pdftops error (%v): %s", err, strings.TrimSpace(string(out)))
-		}
-		return src
-	}
-
-	argsGS := []string{
-		"-sDEVICE=pdfwrite",
-		"-dCompatibilityLevel=1.4",
-		"-dAutoRotatePages=/None",
-		"-dNOPAUSE", "-dQUIET", "-dBATCH",
-		"-sOutputFile=" + cleanPDF,
-		psPath,
-	}
-	cmdGS := exec.Command(gsCmd, argsGS...)
-	if outGS, errGS := cmdGS.CombinedOutput(); errGS != nil {
-		if log != nil {
-			log.Printf("ensurePrintablePDF: gs error (%v): %s", errGS, strings.TrimSpace(string(outGS)))
-		}
-		_ = os.Remove(cleanPDF)
-		return src
-	}
-
-	if fiClean, err := os.Stat(cleanPDF); err == nil && fiClean.Size() > 0 {
-		return cleanPDF
+	if fixed, ok := repairPDFWithGhostscript(src, log); ok {
+		return fixed
 	}
 	return src
+}
+
+// pageDimensionsPoints reads the first page's MediaBox in points. pdfinfo
+// (poppler) is authoritative; ImageMagick identify reports points for PDFs as a
+// fallback. Returns ok=false when neither tool is present or the geometry cannot
+// be parsed, so callers leave the user's choice untouched instead of guessing.
+func pageDimensionsPoints(path string) (w, h int, ok bool) {
+	if bin, err := exec.LookPath("pdfinfo"); err == nil {
+		if out, err := exec.Command(bin, path).Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				key, val, found := strings.Cut(line, ":")
+				if !found || !strings.EqualFold(strings.TrimSpace(key), "Page size") {
+					continue
+				}
+				// "419.53 x 595.28 pts (A5)" → fields[0]="419.53", fields[2]="595.28"
+				fields := strings.Fields(val)
+				if len(fields) < 3 || !strings.EqualFold(fields[1], "x") {
+					break
+				}
+				pw, err1 := strconv.ParseFloat(fields[0], 64)
+				ph, err2 := strconv.ParseFloat(fields[2], 64)
+				if err1 == nil && err2 == nil && pw > 0 && ph > 0 {
+					return int(pw), int(ph), true
+				}
+				break
+			}
+		}
+	}
+	if bin, err := exec.LookPath("identify"); err == nil {
+		if out, err := exec.Command(bin, "-format", "%w %h", path+"[0]").Output(); err == nil {
+			parts := strings.Fields(strings.TrimSpace(string(out)))
+			if len(parts) == 2 {
+				pw, err1 := strconv.Atoi(parts[0])
+				ph, err2 := strconv.Atoi(parts[1])
+				if err1 == nil && err2 == nil && pw > 0 && ph > 0 {
+					return pw, ph, true
+				}
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// resolveOrientationForPDF drops a requested landscape rotation when the page is
+// ALREADY wider than tall: CUPS would otherwise rotate an already-landscape page
+// and print it portrait. Pure, so it is unit-testable without a PDF or printer.
+func resolveOrientationForPDF(requested string, w, h int) string {
+	if strings.EqualFold(strings.TrimSpace(requested), "landscape") && w > h {
+		return "portrait"
+	}
+	return requested
 }
 
 // maxSelfContainedPDFBytes caps the always-repair path; larger PDFs skip
 // re-distillation to avoid long dispatch stalls.
 const maxSelfContainedPDFBytes = 32 << 20
-
-var suspiciousRotateRE = regexp.MustCompile(`/\s*Rotate\s+[-+]?\d+\.\d+`)
-
-// pdfHasFloatRotate does a best-effort raw byte scan for non-integer /Rotate
-// page values. Compressed object streams hide the value, so a false negative
-// only means we rely on dispatch-time repair instead.
-func pdfHasFloatRotate(path string) (bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false, err
-	}
-	return suspiciousRotateRE.Match(data), nil
-}
 
 // repairPDFWithGhostscript rewrites src into a structurally clean PDF using
 // ghostscript pdfwrite. It returns the repaired path and true on success; on
@@ -2865,89 +2945,6 @@ func repairPDFWithGhostscript(src string, log *log.Logger) (string, bool) {
 		log.Printf("repairPDF: %s normalized (%d → %d bytes)", filepath.Base(src), fi.Size(), chk.Size())
 	}
 	return dst, true
-}
-
-// rasterizePDFRepair rebuilds a broken PDF by rendering every page to an
-// image and writing a fresh flat document. Last resort for producer defects
-// that crash or silently empty cups-filters pdftopdf (float /Rotate, bad crop
-// boxes), trading vector fidelity for guaranteed delivery.
-func rasterizePDFRepair(src string, log *log.Logger) (string, bool) {
-	fi, err := os.Stat(src)
-	if err != nil || fi.Size() == 0 || fi.Size() > maxSelfContainedPDFBytes {
-		return "", false
-	}
-	conv, err := exec.LookPath("convert")
-	if err != nil {
-		return "", false
-	}
-	dst := strings.TrimSuffix(src, ".pdf") + ".ras.pdf"
-	args := []string{
-		"-density", "200",
-		src,
-		"-background", "white",
-		"-alpha", "off",
-		"-compress", "zip",
-		dst,
-	}
-	out, err := exec.Command(conv, args...).CombinedOutput()
-	if err != nil {
-		if log != nil {
-			log.Printf("rasterizeRepair: convert failed for %s: %v: %s", filepath.Base(src), err, strings.TrimSpace(string(out)))
-		}
-		_ = os.Remove(dst)
-		return "", false
-	}
-	chk, err := os.Stat(dst)
-	if err != nil || chk.Size() == 0 {
-		_ = os.Remove(dst)
-		return "", false
-	}
-	if log != nil {
-		log.Printf("rasterizeRepair: %s rebuilt as image-PDF (%d → %d bytes)", filepath.Base(src), fi.Size(), chk.Size())
-	}
-	return dst, true
-}
-
-// pdfToPageImages renders every page of src to a PNG at 200dpi and returns
-// the sorted page paths plus their temp directory (caller removes it).
-func pdfToPageImages(src string, gray bool) ([]string, string, error) {
-	gs, err := exec.LookPath("gs")
-	if err != nil {
-		return nil, "", err
-	}
-	dir, err := os.MkdirTemp(filepath.Dir(src), "kp-pages-*")
-	if err != nil {
-		return nil, "", err
-	}
-	device := "png16m"
-	out := filepath.Join(dir, "p-%02d.png")
-	// No TextAlphaBits/GraphicsAlphaBits: antialiased glyph edges turn into
-	// light-gray pixels that the ESC/P-R threshold washes out — tables print,
-	// text vanishes. Crisp unantialiased glyphs at 360dpi survive the driver.
-	render := exec.Command(gs,
-		"-dSAFER", "-dNOPAUSE", "-dBATCH",
-		"-sDEVICE="+device, "-r360",
-		"-sOutputFile="+out, src,
-	)
-	if outB, cerr := render.CombinedOutput(); cerr != nil {
-		_ = os.RemoveAll(dir)
-		return nil, "", fmt.Errorf("gs render: %v: %s", cerr, strings.TrimSpace(string(outB)))
-	}
-	pages, err := filepath.Glob(filepath.Join(dir, "p-*.png"))
-	if err != nil || len(pages) == 0 {
-		_ = os.RemoveAll(dir)
-		return nil, "", errors.New("gs render produced no pages")
-	}
-	sort.Strings(pages)
-
-	// Contrast push so anti-aliased remnants commit to black instead of
-	// falling below the driver's tone threshold.
-	if conv, cerr := exec.LookPath("convert"); cerr == nil {
-		for _, p := range pages {
-			_ = exec.Command(conv, p, "-level", "55%,97%", p).Run()
-		}
-	}
-	return pages, dir, nil
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {

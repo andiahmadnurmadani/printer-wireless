@@ -46,7 +46,7 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
 3. **Pencegahan Stuck Queue (Pre-flight):** Jika ada print job berupa raw text (misal hasil echo ke `lp`) yang tersangkut di queue, CUPS akan mem-block *semua* job PDF selanjutnya yang valid.
    - **Solusi Kode:** Backend Go **selalu** menjalankan `cancel -a <printer>`, `cupsenable <printer>`, dan `cupsaccept <printer>` tepat sebelum mendispatch job baru ke local `lp`.
 4. **Penanganan False Failure CUPS (`stopped: job-completed-with-errors`):** Filter driver Epson mengeluarkan sinyal notice stderr non-fatal saat mentransfer byte terakhir ke USB. Status `stopped` dengan reason `job-completed-with-errors` dihitung sebagai **`completed`** oleh backend, bukan failed. Ini mencegah UI memunculkan status gagal palsu dan mencegah user melakukan *Retry* yang memicu *double print*.
-5. **Fit to Page & Scaling A4:** Dokumen yang lebih kecil dari ukuran kertas A4 wajib diekspansi secara proporsional menggunakan flag `-expand` pada `pdftops` serta atribut IPP `print-scaling=fit` / `fitplot=true` agar tidak tercetak kecil di tengah kertas.
+5. **Fit to Page, Orientation & Custom Scaling:** Feed fisik hardware printer desktop (Epson L3210) selalu memasukkan kertas pada sisi pendek (portrait). Normalisasi PDF di backend (`formatPDFForPrint`) merotasi kanvas 270° saat mode Landscape dipilih, menerapkan persentase skala (`scalePercent`, misal 50%) atau mode fit/shrink/actual, dan memformat PDF ke ukuran feed fisik target (`sheetW` x `sheetH`) via Ghostscript `pdfwrite` tanpa merusak kualitas vektor. Dokumen dikirim ke CUPS dengan `opts.Orientation = "portrait"` dan `opts.Scaling = "Actual size"` sehingga CUPS tidak lagi memotong dokumen landscape atau menolak skala kustom user.
 
 ### Frontend UI, Auth & History Isolation
 1. **Unauthenticated Default (Guest Mode):** Aplikasi tidak lagi memblokir akses pengguna awal dengan login wall layar penuh. Pengunjung tanpa token langsung memuat App Shell dalam role `guest` dan dapat memantau status Dashboard, Daftar Printer, Antrian (Queue), Riwayat, dan Print Studio secara read-only.
@@ -75,7 +75,7 @@ Project ini berjalan terpisah antara storage/development (Synology NAS) dan ekse
 - Saat me-rebuild backend Go, selalu pastikan menggunakan flag `-buildvcs=false` jika dijalankan dalam folder yang sedang dimount dari jaringan (NAS) untuk menghindari error VCS status.
 - **Locale Wajib di PM2 (LANG):** Proses spawn PM2 **tanpa LANG** membuat filter chain CUPS menghasilkan `Sent 0 bytes` secara SILENT sementara CUPS melaporkan job sukses (~50% gagal "acak").
   - **Solusi:** `ecosystem.config.cjs` memuat `LANG/LANGUAGE/LC_ALL` + belt-and-suspenders inject env di `dispatchPrintJob`. **Dilarang hapus** saat cleanup env.
-- **PDF Vector Normalization:** Normalisasi dokumen via Poppler `pdftops -level3 -paper A4 -expand` + Ghostscript pdfwrite `ensurePrintablePDF`.
+- **PDF Vector Normalization:** `ensurePrintablePDF` memperbaiki metadata rusak (float `/Rotate`, crop box non-standar) via Ghostscript pdfwrite **tanpa mengubah geometri halaman** — TIDAK ada `-paper A4` dan TIDAK ada `-expand`, supaya ukuran kertas yang dipilih user benar-benar dihormati. Penskalaan ke kertas dilakukan CUPS via `print-scaling`.
 - **Status Job = IPP Authoritative:** Status sukses/gagal dibaca via `GetJobStateIPP` (discovery/jobstate.go).
 - **RBAC:** Role enum `admin|user|guest`; matriks izin lengkap ada di `docs/PRINTING_PIPELINE.md` dan kode `Handler()`. Guest read-only; user boleh cetak; admin penuh + manajemen users.
 

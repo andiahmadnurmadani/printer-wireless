@@ -37,7 +37,7 @@ func TestBuildWatermarkPostScript_Layouts(t *testing.T) {
 				"/EndPage",
 				"45 rotate",
 				"DRAFT COPY",
-				"0.89 setgray",
+				"0.90 setgray",
 			},
 		},
 		{

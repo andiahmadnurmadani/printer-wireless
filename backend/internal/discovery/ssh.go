@@ -247,6 +247,15 @@ func SSHSubmitJobRemote(userHost, printerName string, remoteFiles []string, opts
 			flags = append(flags, "orientation-requested=3", "portrait")
 		}
 	}
+	if IsFillScaling(opts.Scaling, opts.Borderless) {
+		flags = append(flags, "print-scaling=fill")
+	} else if strings.EqualFold(opts.Scaling, "actual size") {
+		flags = append(flags, "print-scaling=none")
+	} else if strings.EqualFold(opts.Scaling, "shrink to fit") {
+		flags = append(flags, "print-scaling=auto-fit")
+	} else {
+		flags = append(flags, "fit-to-page", "print-scaling=fit")
+	}
 	jobName := opts.JobName
 	if jobName == "" {
 		jobName = "kroomprint-job"
@@ -616,6 +625,10 @@ func SSHSubmitJob(userHost, printerName, filePath string, opts JobOptions) (int,
 	}
 	if IsFillScaling(opts.Scaling, opts.Borderless) {
 		flags = append(flags, "print-scaling=fill")
+	} else if strings.EqualFold(opts.Scaling, "actual size") {
+		flags = append(flags, "print-scaling=none")
+	} else if strings.EqualFold(opts.Scaling, "shrink to fit") {
+		flags = append(flags, "print-scaling=auto-fit")
 	} else {
 		flags = append(flags, "fit-to-page", "print-scaling=fit")
 	}

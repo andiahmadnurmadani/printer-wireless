@@ -309,7 +309,7 @@ export default function PrintPage({ onNavigate }) {
   // documents, "Photo Layout" for photos — so the two paths felt like different
   // applications.
   const docIsImage = !!file && isImage(file.name)
-  const docIsPaged = !!file && (isPdf(file.name) || isOfficeDoc(file.name) || isText(file.name))
+  const docIsPaged = !!file && !isImage(file.name)
 
   // Same scaling list for both paths. "Fill page (Crop)" was previously
   // unreachable from the panel even though the backend always supported it.
@@ -498,7 +498,8 @@ export default function PrintPage({ onNavigate }) {
     if (submitting) return
 
     // Manual Duplex Assistant Workflow (for printers without hardware duplex like Epson L3210)
-    if (manualDuplex) {
+    const isManualDuplexActive = manualDuplex || (docIsPaged && docConfig.duplexMode === 'manual')
+    if (isManualDuplexActive) {
       setManualDuplexStep('odd')
       setManualDuplexModalOpen(true)
       const oddPayload = {
@@ -520,7 +521,7 @@ export default function PrintPage({ onNavigate }) {
         mediaType,
         inputTray,
         borderless,
-        booklet,
+        booklet: docIsPaged ? (docConfig.handlingMode === 'booklet' || booklet) : false,
         watermark,
         watermarkLayout,
         watermarkOpacity,
@@ -573,7 +574,7 @@ export default function PrintPage({ onNavigate }) {
       pages: pageCount,
       copies,
       color: effColor,
-      duplex: duplex && canDuplex,
+      duplex: (duplex && canDuplex) || (docIsPaged && (docConfig.duplexMode === 'long' || docConfig.duplexMode === 'short')),
       paperSize: effectivePaper,
       orientation: effectiveOrient,
       quality: effectiveQuality,
@@ -589,7 +590,7 @@ export default function PrintPage({ onNavigate }) {
       mediaType,
       inputTray,
       borderless,
-      booklet,
+      booklet: docIsPaged ? (docConfig.handlingMode === 'booklet' || booklet) : false,
       watermark,
       watermarkLayout,
       watermarkOpacity,
@@ -725,9 +726,11 @@ export default function PrintPage({ onNavigate }) {
               <div className="w-16 h-16 rounded-[18px] border-2 border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900 mb-4 shadow-[4px_4px_0_0_rgba(56,56,56,1)]">
                 <IconUpload size={28} />
               </div>
-              <div className="font-figtree font-bold text-dark-black-900 text-[18px]">Drag & drop your document here</div>
+              <div className="font-figtree font-bold text-dark-black-900 text-[18px]">
+                Drag & drop dokumen atau foto Anda di sini
+              </div>
               <div className="font-figtree font-light text-dark-black-900/60 text-[14px] mt-1 max-w-sm">
-                Click to browse files — PDF documents, high-res images, spreadsheets, and text files.
+                Klik untuk memilih file PDF, Word (.docx), Excel, teks, atau foto gambar.
               </div>
               <div className="flex flex-wrap gap-2 justify-center mt-5">
                 {['PDF', 'PNG', 'JPG', 'TXT', 'DOCX', 'XLSX', 'CSV'].map((t) => (
@@ -815,7 +818,7 @@ export default function PrintPage({ onNavigate }) {
                 paperDim={paperDim}
                 orientation={effectiveOrient}
                 color={effColor}
-                scaling={effectiveScaling}
+                scaling={docIsPaged ? scalingForDocs : effectiveScaling}
                 quality={effectiveQuality}
                 duplex={duplex && canDuplex}
                 copies={copies}
@@ -853,7 +856,7 @@ export default function PrintPage({ onNavigate }) {
                     paperDim={paperDim}
                     color={effColor}
                     duplex={duplex && canDuplex}
-                    pageRange={range}
+                    pageRange={docIsPaged ? effectivePageRange : range}
                   />
                 </div>
               )}
@@ -978,19 +981,18 @@ export default function PrintPage({ onNavigate }) {
                     onChange={(v) => setQuality(v)}
                     options={qualities}
                   />
-                  {/* Scaling is shown for image or unselected file; for documents, DocumentLayoutControls provides full scaling */}
-                  {(!file || isImage(file.name)) && (
+                  {/* Photo Scaling & Orientation (only shown when in Photo mode) */}
+                  {docIsImage && (
                     <Select
                       label="Scaling"
                       value={effectiveScalingUI}
                       onChange={handleScalingChange}
                       options={scalingOptions}
-                      hint={docIsImage ? 'Foto: Fit = utuh proporsional, Fill = penuh kertas' : undefined}
+                      hint="Foto: Fit = utuh proporsional, Fill = penuh kertas"
                     />
                   )}
 
-                  {/* Orientation Switcher — only shown for image or unselected file; for documents, DocumentLayoutControls provides WPS Office orientation & rotation */}
-                  {(!file || isImage(file.name)) && (
+                  {docIsImage && (
                     <div className="flex flex-col gap-1.5">
                       <span className="font-figtree text-[13px] font-medium text-dark-black-900">Orientation</span>
                       <div className="flex gap-2">
@@ -1013,7 +1015,7 @@ export default function PrintPage({ onNavigate }) {
                   )}
                 </div>
 
-                {/* Color & Hardware Duplex Toggles */}
+                {/* Color & Rasterize Toggles */}
                 <div className="p-3.5 bg-vanilla-100 rounded-[14px] border-2 border-dark-black-900 flex flex-col divide-y divide-dark-black-900/10">
                   <div className={!canColor ? 'opacity-45 pointer-events-none select-none' : ''}>
                     <Toggle
@@ -1023,7 +1025,7 @@ export default function PrintPage({ onNavigate }) {
                       onChange={setColor}
                     />
                   </div>
-                  {(!file || isImage(file.name)) && (
+                  {docIsImage && (
                     <div className={!canDuplex ? 'opacity-45 pointer-events-none select-none' : ''}>
                       <Toggle
                         label="Hardware Two-Sided (Duplex)"
@@ -1041,8 +1043,23 @@ export default function PrintPage({ onNavigate }) {
                   />
                 </div>
 
-                {/* Copies & Page Range (only shown for image or unselected; for documents, DocumentLayoutControls provides full WPS Office Salinan & Rentang Halaman) */}
-                {(!file || isImage(file.name)) && (
+                {/* When NO file is uploaded yet, show informative placeholder guide card */}
+                {!file && (
+                  <div className="flex flex-col items-center justify-center p-5 bg-white/70 rounded-[14px] border-2 border-dashed border-dark-black-900/30 text-center gap-2">
+                    <div className="w-9 h-9 rounded-[9px] bg-dark-black-900 text-lime-300 flex items-center justify-center shadow-xs">
+                      <IconFile size={18} />
+                    </div>
+                    <span className="font-figtree font-bold text-[13px] text-dark-black-900">
+                      Pilih atau Unggah File Dokumen
+                    </span>
+                    <span className="font-figtree text-[11.5px] text-dark-black-900/60 max-w-xs leading-relaxed">
+                      Unggah file PDF, dokumen Office, atau foto di sebelah kiri untuk membuka opsi tata letak, rentang halaman, penskalaan, dan finishing.
+                    </span>
+                  </div>
+                )}
+
+                {/* Photo Copies & Page Range (only shown when in Photo mode) */}
+                {docIsImage && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <label className="flex flex-col gap-1.5">
                       <span className="font-figtree text-[13px] font-medium text-dark-black-900">Copies (Salinan)</span>
@@ -1070,7 +1087,7 @@ export default function PrintPage({ onNavigate }) {
                 )}
 
                 {/* ── Photo Layout & Sizing Card (for image printing) ── */}
-                {file && isImage(file.name) && (
+                {docIsImage && (
                   <ImageLayoutControls
                     config={imgConfig}
                     onChange={handleUpdateImgConfig}
@@ -1081,7 +1098,7 @@ export default function PrintPage({ onNavigate }) {
                 )}
 
                 {/* ── Document Page Handling & Layout Card (for PDF & documents — WPS Office Style) ── */}
-                {file && !isImage(file.name) && (
+                {docIsPaged && (
                   <DocumentLayoutControls
                     config={docConfig}
                     onChange={setDocConfig}
@@ -1101,6 +1118,8 @@ export default function PrintPage({ onNavigate }) {
                     onChangeNUp={handleNUpChange}
                     orientation={effectiveOrient}
                     onChangeOrientation={handleOrientationChange}
+                    booklet={booklet}
+                    onChangeBooklet={setBooklet}
                   />
                 )}
               </div>
@@ -1499,7 +1518,7 @@ export default function PrintPage({ onNavigate }) {
         duplex={duplex && canDuplex}
         copies={copies}
         quality={effectiveQuality}
-        scaling={effectiveScaling}
+        scaling={docIsPaged ? scalingForDocs : effectiveScaling}
         nUp={nUp}
         watermark={watermark}
         watermarkLayout={watermarkLayout}

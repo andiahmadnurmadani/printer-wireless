@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 
 function isPageInRange(pageNum, rangeStr, total) {
-  if (!rangeStr || !rangeStr.trim()) return true
+  if (!rangeStr || !rangeStr.trim() || rangeStr.toLowerCase() === 'all') return true
+  const lower = rangeStr.trim().toLowerCase()
+  if (lower === 'odd') return pageNum % 2 !== 0
+  if (lower === 'even') return pageNum % 2 === 0
   const parts = rangeStr.split(/[,;\s]+/)
   for (const part of parts) {
     if (!part) continue

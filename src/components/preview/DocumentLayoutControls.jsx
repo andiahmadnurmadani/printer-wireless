@@ -7,6 +7,7 @@ import {
   IconPlus,
   IconCopy,
   IconFile,
+  IconBook,
 } from '../ui/icons'
 
 export const DEFAULT_DOC_CONFIG = {
@@ -40,6 +41,7 @@ export const DEFAULT_DOC_CONFIG = {
 
   // 7. Cetak Bolak-Balik (Duplex)
   duplexMode: 'simplex', // 'simplex' | 'long' | 'short' | 'manual'
+  bookletBinding: 'left', // 'left' | 'right'
 }
 
 export default function DocumentLayoutControls({
@@ -61,6 +63,8 @@ export default function DocumentLayoutControls({
   onChangeNUp,
   orientation = 'Portrait',
   onChangeOrientation,
+  booklet = false,
+  onChangeBooklet,
 }) {
   const update = (patch) => {
     onChange({ ...config, ...patch })
@@ -68,7 +72,7 @@ export default function DocumentLayoutControls({
 
   const isCustomScale = config.scaleMode === 'custom'
   const isCustomMargin = config.marginPreset === 'custom'
-  const currentHandling = config.handlingMode || (nUp > 1 ? 'multiple' : 'size')
+  const currentHandling = config.handlingMode || (booklet ? 'booklet' : nUp > 1 ? 'multiple' : 'size')
 
   const handleScaleStep = (delta) => {
     const next = Math.max(25, Math.min(200, (config.customScale || 100) + delta))
@@ -296,15 +300,16 @@ export default function DocumentLayoutControls({
             <span>Penanganan Ukuran Halaman</span>
           </label>
 
-          {/* Sub-mode Tab: Ukuran vs Banyak Halaman (N-Up) */}
+          {/* Sub-mode Tab: Ukuran vs Banyak Halaman (N-Up) vs Buku Saku (Booklet) */}
           <div className="flex bg-vanilla-300 p-0.5 rounded-[8px] border border-dark-black-900/25">
             <button
               type="button"
               onClick={() => {
                 update({ handlingMode: 'size' })
+                if (onChangeBooklet) onChangeBooklet(false)
                 if (onChangeNUp) onChangeNUp(1)
               }}
-              className={`px-2.5 py-1 rounded-[6px] font-figtree text-[11px] font-bold transition-colors cursor-pointer ${
+              className={`px-2 py-1 rounded-[6px] font-figtree text-[11px] font-bold transition-colors cursor-pointer ${
                 currentHandling === 'size'
                   ? 'bg-dark-black-900 text-lime-300'
                   : 'text-dark-black-900/70 hover:text-dark-black-900'
@@ -316,15 +321,31 @@ export default function DocumentLayoutControls({
               type="button"
               onClick={() => {
                 update({ handlingMode: 'multiple' })
+                if (onChangeBooklet) onChangeBooklet(false)
                 if (onChangeNUp && nUp === 1) onChangeNUp(2)
               }}
-              className={`px-2.5 py-1 rounded-[6px] font-figtree text-[11px] font-bold transition-colors cursor-pointer ${
+              className={`px-2 py-1 rounded-[6px] font-figtree text-[11px] font-bold transition-colors cursor-pointer ${
                 currentHandling === 'multiple'
                   ? 'bg-dark-black-900 text-lime-300'
                   : 'text-dark-black-900/70 hover:text-dark-black-900'
               }`}
             >
               Banyak Halaman
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                update({ handlingMode: 'booklet' })
+                if (onChangeBooklet) onChangeBooklet(true)
+                if (onChangeNUp) onChangeNUp(2)
+              }}
+              className={`px-2 py-1 rounded-[6px] font-figtree text-[11px] font-bold transition-colors cursor-pointer ${
+                currentHandling === 'booklet'
+                  ? 'bg-dark-black-900 text-lime-300'
+                  : 'text-dark-black-900/70 hover:text-dark-black-900'
+              }`}
+            >
+              Buku Saku
             </button>
           </div>
         </div>
@@ -508,6 +529,50 @@ export default function DocumentLayoutControls({
           </div>
         )}
 
+        {/* Opsi Tab C: Buku Saku / Booklet (WPS Office Booklet) */}
+        {currentHandling === 'booklet' && (
+          <div className="flex flex-col gap-2.5 p-3 bg-white border-2 border-dark-black-900 rounded-[12px] shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-figtree text-[12px] font-bold text-dark-black-900 flex items-center gap-1.5">
+                <IconBook size={14} />
+                <span>Format Buku Saku (Booklet)</span>
+              </span>
+              <span className="font-geist text-[11px] font-bold text-dark-black-900 bg-lime-300 px-2 py-0.5 rounded-[5px] border border-dark-black-900/20">
+                2 Halaman / Lembar Siap Lipat
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-dark-black-900/10 flex-wrap">
+              <span className="font-figtree text-[11.5px] font-medium text-dark-black-900/80">
+                Arah Jilid / Lipatan:
+              </span>
+              <div className="flex bg-vanilla-200 border border-dark-black-900 rounded-[7px] p-0.5">
+                {[
+                  { id: 'left', label: 'Jilid Kiri (Standar)' },
+                  { id: 'right', label: 'Jilid Kanan' },
+                ].map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => update({ bookletBinding: b.id })}
+                    className={`px-2.5 py-0.5 rounded-[5px] font-figtree text-[11px] font-bold cursor-pointer ${
+                      (config.bookletBinding || 'left') === b.id
+                        ? 'bg-dark-black-900 text-lime-300'
+                        : 'text-dark-black-900/70 hover:text-dark-black-900'
+                    }`}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <p className="font-figtree text-[11px] text-dark-black-900/60 leading-relaxed bg-vanilla-100 p-2 rounded-[8px] border border-dark-black-900/10">
+              Dokumen akan dicetak berdampingan 2 halaman per sisi kertas dengan urutan nomor halaman yang dirancang untuk langsung dilipat menjadi buku saku atau buklet.
+            </p>
+          </div>
+        )}
+
         {/* Pemusatan Otomatis Checkbox (WPS Office Center) */}
         <div className="flex items-center justify-between pt-0.5">
           <button
@@ -687,6 +752,127 @@ export default function DocumentLayoutControls({
               </label>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* ── SEKSI 6: Cetak Bolak-Balik (Duplex / Two-Sided Printing) ── */}
+      <div className="flex flex-col gap-2.5 border-t-2 border-dark-black-900/10 pt-3.5">
+        <div className="flex items-center justify-between">
+          <label className="font-figtree text-[13px] font-bold text-dark-black-900 flex items-center gap-1.5">
+            <IconCopy size={14} />
+            <span>Cetak Bolak-Balik (Duplex)</span>
+          </label>
+          <span className="font-geist text-[11px] font-bold text-dark-black-900 bg-lime-300 px-2 py-0.5 rounded-[5px] border border-dark-black-900/20">
+            {manualDuplex
+              ? 'Manual 2-Tahap'
+              : duplex && canDuplex
+                ? (config.duplexMode === 'short' ? 'Otomatis (Sisi Pendek)' : 'Otomatis (Sisi Panjang)')
+                : 'Satu Sisi (Simplex)'}
+          </span>
+        </div>
+
+        {/* 3 Opsi Mode Duplex: Satu Sisi, Bolak-Balik Otomatis, Manual Duplex */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (onToggleDuplex) onToggleDuplex(false)
+              if (onToggleManualDuplex) onToggleManualDuplex(false)
+              update({ duplexMode: 'simplex' })
+            }}
+            className={`py-2 px-2 rounded-[9px] border-2 font-figtree text-[12px] font-bold transition-all cursor-pointer text-center ${
+              !duplex && !manualDuplex
+                ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-xs'
+                : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900'
+            }`}
+          >
+            Satu Sisi (Simplex)
+          </button>
+
+          <button
+            type="button"
+            disabled={!canDuplex}
+            onClick={() => {
+              if (!canDuplex) return
+              if (onToggleDuplex) onToggleDuplex(true)
+              if (onToggleManualDuplex) onToggleManualDuplex(false)
+              update({ duplexMode: config.duplexMode === 'simplex' ? 'long' : config.duplexMode })
+            }}
+            className={`py-2 px-2 rounded-[9px] border-2 font-figtree text-[12px] font-bold transition-all text-center ${
+              !canDuplex
+                ? 'border-dark-black-900/15 bg-vanilla-200/50 text-dark-black-900/35 cursor-not-allowed'
+                : duplex && !manualDuplex
+                  ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-xs cursor-pointer'
+                  : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900 cursor-pointer'
+            }`}
+            title={canDuplex ? 'Hardware duplex internal printer' : 'Printer ini tidak memiliki hardware duplex internal'}
+          >
+            Bolak-Balik Otomatis
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (onToggleManualDuplex) onToggleManualDuplex(true)
+              if (onToggleDuplex) onToggleDuplex(false)
+              update({ duplexMode: 'manual' })
+            }}
+            className={`py-2 px-2 rounded-[9px] border-2 font-figtree text-[12px] font-bold transition-all cursor-pointer text-center ${
+              manualDuplex
+                ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-xs'
+                : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900'
+            }`}
+            title="Mencetak halaman ganjil terlebih dahulu, lalu masukkan kertas kembali untuk halaman genap"
+          >
+            Manual Duplex (2-Tahap)
+          </button>
+        </div>
+
+        {/* Sub-opsi Hardware Duplex: Long edge vs Short edge */}
+        {duplex && canDuplex && !manualDuplex && (
+          <div className="flex items-center justify-between gap-2 p-2.5 bg-white border-2 border-dark-black-900 rounded-[10px]">
+            <span className="font-figtree text-[11.5px] font-bold text-dark-black-900">
+              Arah Balik Kertas:
+            </span>
+            <div className="flex bg-vanilla-200 border border-dark-black-900 rounded-[7px] p-0.5">
+              {[
+                { id: 'long', label: 'Sisi Panjang (Buku/Laporan)' },
+                { id: 'short', label: 'Sisi Pendek (Kalender)' },
+              ].map((edge) => (
+                <button
+                  key={edge.id}
+                  type="button"
+                  onClick={() => update({ duplexMode: edge.id })}
+                  className={`px-2.5 py-1 rounded-[5px] font-figtree text-[11px] font-bold cursor-pointer ${
+                    (config.duplexMode || 'long') === edge.id
+                      ? 'bg-dark-black-900 text-lime-300'
+                      : 'text-dark-black-900/70 hover:text-dark-black-900'
+                  }`}
+                >
+                  {edge.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Info Manual Duplex Guide */}
+        {manualDuplex && (
+          <div className="flex flex-col gap-1 p-2.5 bg-lime-300/30 border-2 border-dark-black-900 rounded-[10px]">
+            <div className="flex items-center gap-1.5 font-figtree text-[12px] font-bold text-dark-black-900">
+              <IconCheck size={14} className="text-dark-black-900" />
+              <span>Manual Duplex Aktif</span>
+            </div>
+            <p className="font-figtree text-[11px] text-dark-black-900/80 leading-relaxed">
+              Langkah 1 akan mencetak halaman ganjil. Setelah selesai, pop-up interaktif akan memandu Anda membalik tumpukan kertas untuk mencetak halaman genap. Hemat kertas untuk printer seperti Epson L3210!
+            </p>
+          </div>
+        )}
+
+        {!canDuplex && !manualDuplex && (
+          <span className="font-figtree text-[11px] text-dark-black-900/60 italic">
+            Printer ini tidak memiliki hardware duplex otomatis. Gunakan opsi <strong>Manual Duplex (2-Tahap)</strong> untuk mencetak bolak-balik.
+          </span>
         )}
       </div>
     </div>

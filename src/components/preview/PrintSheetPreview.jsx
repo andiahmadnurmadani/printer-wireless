@@ -727,16 +727,16 @@ export default function PrintSheetPreview({
                 style={{
                   transform: docConfig?.scaleMode === 'custom'
                     ? `scale(${Math.max(0.25, Math.min(2.0, (docConfig?.customScale || 100) / 100))}) rotate(${docConfig?.rotation || 0}deg)`
-                    : docConfig?.rotation
-                      ? `${scalingStyles.transform} rotate(${docConfig.rotation}deg)`
-                      : scalingStyles.transform,
+                    : `${scalingStyles.transform} rotate(${docConfig?.rotation || 0}deg)`,
                   padding: docConfig?.marginPreset === 'none'
                     ? '0px'
                     : docConfig?.marginPreset === 'minimum'
                       ? '6px'
-                      : docConfig?.marginPreset === 'custom' && docConfig?.margins
-                        ? `${docConfig.margins.top}px ${docConfig.margins.right}px ${docConfig.margins.bottom}px ${docConfig.margins.left}px`
-                        : undefined,
+                      : docConfig?.marginPreset === 'default'
+                        ? '10px'
+                        : docConfig?.marginPreset === 'custom' && docConfig?.margins
+                          ? `${Math.round(docConfig.margins.top * 2)}px ${Math.round(docConfig.margins.right * 2)}px ${Math.round(docConfig.margins.bottom * 2)}px ${Math.round(docConfig.margins.left * 2)}px`
+                          : '10px',
                   transition: 'transform 0.15s ease-out, padding 0.15s ease-out',
                 }}
                 className="w-full h-full flex items-center justify-center"

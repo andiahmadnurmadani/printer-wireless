@@ -304,7 +304,14 @@ export default function PrintSheetPreview({
 
   // Render PDF page to canvas (re-renders on quality/page/pdfDoc change)
   useEffect(() => {
-    if (!isPdf || !pdfDoc || !canvasRef.current) return
+    if (!canvasRef.current) return
+    if (!isPdf || !pdfDoc) {
+      const ctx = canvasRef.current.getContext('2d')
+      if (ctx) {
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
+      }
+      return
+    }
 
     let cancelled = false
     setRenderLoading(true)
@@ -412,6 +419,44 @@ export default function PrintSheetPreview({
       showMargins,
     })
   }, [isImage, paperDim, imgConfig, imgNatural, showMargins])
+
+  // Precise Document margin padding in preview pixels matching physical millimeters
+  const docPadding = useMemo(() => {
+    if (isImage) return '0px'
+    const pxPerMm = paperDim.baseWidthPx / (paperDim.widthMm || 210)
+    switch (docConfig?.marginPreset) {
+      case 'none':
+        return '0px'
+      case 'narrow':
+      case 'minimum':
+        return `${Math.round(3 * pxPerMm)}px`
+      case 'default':
+        return `${Math.round(5 * pxPerMm)}px`
+      case 'custom':
+        if (docConfig?.margins) {
+          return `${Math.round((docConfig.margins.top || 0) * pxPerMm)}px ${Math.round((docConfig.margins.right || 0) * pxPerMm)}px ${Math.round((docConfig.margins.bottom || 0) * pxPerMm)}px ${Math.round((docConfig.margins.left || 0) * pxPerMm)}px`
+        }
+        return `${Math.round(5 * pxPerMm)}px`
+      default:
+        return `${Math.round(5 * pxPerMm)}px`
+    }
+  }, [isImage, paperDim.baseWidthPx, paperDim.widthMm, docConfig?.marginPreset, docConfig?.margins])
+
+  // Visual scaling transform matching DocumentLayoutControls
+  const docTransform = useMemo(() => {
+    if (isImage) return 'none'
+    const rot = (docConfig?.rotation || 0) % 360
+    let scaleStr = 'scale(1.0)'
+    if (docConfig?.scaleMode === 'custom') {
+      const s = Math.max(0.25, Math.min(2.0, (docConfig?.customScale || 100) / 100))
+      scaleStr = `scale(${s})`
+    } else if (docConfig?.scaleMode === 'fitSheet') {
+      scaleStr = 'scale(0.88)'
+    } else if (docConfig?.scaleMode === 'shrink') {
+      scaleStr = 'scale(0.92)'
+    }
+    return rot !== 0 ? `${scaleStr} rotate(${rot}deg)` : scaleStr
+  }, [isImage, docConfig?.scaleMode, docConfig?.customScale, docConfig?.rotation])
 
   return (
     <div className="flex flex-col gap-4">
@@ -562,7 +607,7 @@ export default function PrintSheetPreview({
             <>
               <span className="text-dark-black-900/30 font-geist">•</span>
               <span className="font-geist text-[11px] font-bold text-dark-black-900 bg-lime-300/80 px-2 py-0.5 rounded-[5px] border border-dark-black-900/20">
-                Skala: {docConfig.scaleMode === 'custom' ? `${docConfig.customScale}%` : docConfig.scaleMode === 'actual' ? '100%' : docConfig.scaleMode === 'shrink' ? 'Kecilkan' : docConfig.scaleMode === 'fill' ? 'Penuh' : 'Fit'}
+                Skala: {docConfig.scaleMode === 'custom' ? `${docConfig.customScale}%` : docConfig.scaleMode === 'actual' ? '100%' : docConfig.scaleMode === 'shrink' ? 'Kecilkan' : 'Paskan'}
               </span>
             </>
           )}
@@ -634,9 +679,7 @@ export default function PrintSheetPreview({
           {/* ── Document Content Area with Applied Scaling & Visual Quality Filter ── */}
           <div
             style={visualFilter}
-            className={`w-full h-full flex-1 relative overflow-hidden bg-white transition-all duration-200 ${
-              isImage ? 'p-0' : `${scalingStyles.wrapperClass} flex items-center justify-center`
-            }`}
+            className="w-full h-full flex-1 relative overflow-hidden bg-white transition-all duration-200 flex items-center justify-center"
           >
             {renderLoading && isPdf && (
               <div className="absolute inset-0 bg-white/80 backdrop-blur-[1px] flex items-center justify-center z-10">
@@ -725,21 +768,11 @@ export default function PrintSheetPreview({
             ) : (
               <div
                 style={{
-                  transform: docConfig?.scaleMode === 'custom'
-                    ? `scale(${Math.max(0.25, Math.min(2.0, (docConfig?.customScale || 100) / 100))}) rotate(${docConfig?.rotation || 0}deg)`
-                    : `${scalingStyles.transform} rotate(${docConfig?.rotation || 0}deg)`,
-                  padding: docConfig?.marginPreset === 'none'
-                    ? '0px'
-                    : docConfig?.marginPreset === 'minimum'
-                      ? '6px'
-                      : docConfig?.marginPreset === 'default'
-                        ? '10px'
-                        : docConfig?.marginPreset === 'custom' && docConfig?.margins
-                          ? `${Math.round(docConfig.margins.top * 2)}px ${Math.round(docConfig.margins.right * 2)}px ${Math.round(docConfig.margins.bottom * 2)}px ${Math.round(docConfig.margins.left * 2)}px`
-                          : '10px',
+                  transform: docTransform,
+                  padding: docPadding,
                   transition: 'transform 0.15s ease-out, padding 0.15s ease-out',
                 }}
-                className="w-full h-full flex items-center justify-center"
+                className="w-full h-full flex items-center justify-center overflow-hidden"
               >
                 {nUp > 1 ? (
                   /* N-Up Multi-Page Grid Simulation */
@@ -792,21 +825,22 @@ export default function PrintSheetPreview({
                   </div>
                 ) : (
                   // Office Doc / Generic File Mockup
-                  <div className="w-full h-full p-5 flex flex-col justify-between">
+                  <div className="w-full h-full p-4 flex flex-col justify-between">
                     <div>
-                      <div className="w-14 h-3 bg-dark-black-900/80 rounded-[2px] mb-3" />
-                      <div className="w-3/4 h-2.5 bg-dark-black-900/35 rounded-[2px] mb-2" />
-                      <div className="w-full h-2 bg-dark-black-900/20 rounded-[2px] mb-1.5" />
-                      <div className="w-5/6 h-2 bg-dark-black-900/20 rounded-[2px] mb-1.5" />
+                      <div className="w-14 h-3 bg-dark-black-900/80 rounded-[2px] mb-2" />
+                      <div className="w-3/4 h-2.5 bg-dark-black-900/35 rounded-[2px] mb-1.5" />
+                      <div className="w-full h-2 bg-dark-black-900/20 rounded-[2px] mb-1" />
+                      <div className="w-5/6 h-2 bg-dark-black-900/20 rounded-[2px] mb-1" />
                       <div className="w-4/5 h-2 bg-dark-black-900/20 rounded-[2px] mb-3" />
-                      <div className="w-full h-24 bg-vanilla-300/40 rounded-[6px] border-2 border-dashed border-dark-black-900/20 flex flex-col items-center justify-center text-dark-black-900/50 font-geist text-[11px]">
-                        <span className="font-bold">{fileType} Document</span>
-                        <span className="text-[9px]">Scaled for {paperDim.name}</span>
+                      <div className="w-full h-24 bg-vanilla-300/40 rounded-[6px] border-2 border-dashed border-dark-black-900/20 flex flex-col items-center justify-center text-dark-black-900/60 font-geist text-[11px] p-2 text-center">
+                        <span className="font-bold text-dark-black-900 text-[12px]">{fileType} Document</span>
+                        <span className="text-[9px] mt-0.5 text-dark-black-900/60">Scaled to physical {paperDim.name} · {orientation}</span>
+                        <span className="text-[8.5px] mt-0.5 text-dark-black-900/40 truncate max-w-[190px]">{file?.name}</span>
                       </div>
                     </div>
-                    <div className="flex justify-between font-geist text-[8.5px] text-dark-black-900/50">
+                    <div className="flex justify-between font-geist text-[8px] text-dark-black-900/50 pt-1.5 border-t border-dark-black-900/10">
                       <span>{file?.name}</span>
-                      <span>Sheet {currentPage}</span>
+                      <span>Sheet {currentPage} of {totalPages}</span>
                     </div>
                   </div>
                 )}

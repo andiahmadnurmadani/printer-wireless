@@ -63,10 +63,11 @@ export const api = {
   convertForPreview: (file) => {
     const fd = new FormData()
     fd.append('file', file)
-    return fetch(`${BASE}/api/convert/preview`, {
+    return fetch(`${BASE}/api/convert/preview?force=true&t=${Date.now()}&r=${Math.random().toString(36).substring(2)}`, {
       method: 'POST',
       headers: authHeaders(),
       body: fd,
+      cache: 'no-store',
     }).then(async (res) => {
       if (!res.ok) {
         let msg = `Preview conversion error ${res.status}`

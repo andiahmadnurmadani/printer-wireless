@@ -9,16 +9,18 @@ import {
   IconUpload, IconFile, IconImage, IconTxt, IconCheck, IconPrinter,
   IconChevronDown, IconEye, IconAlert, IconCamera, IconLock,
   IconStamp, IconLayoutCenter, IconLayoutDiagonal, IconLayoutGrid,
+  IconTable,
 } from '../ui/icons'
 import { getPaperDimensions, paperOption, PAPER_SIZES } from '../../utils/paperDimensions'
-import { loadPdfDocument } from '../../utils/pdfHelper'
+import { loadPdfDocument, clearPdfBitmapCache } from '../../utils/pdfHelper'
 import { DEFAULT_IMAGE_CONFIG, compositeImageToPrintBlob } from '../../utils/imageLayoutHelper'
 import PrintSheetPreview from '../preview/PrintSheetPreview'
-import PageThumbnails from '../preview/PageThumbnails'
+import PageThumbnails, { clearThumbCache } from '../preview/PageThumbnails'
 import FinalPrintModal from '../preview/FinalPrintModal'
 import CameraScanModal from '../scanner/CameraScanModal'
 import ImageLayoutControls from '../preview/ImageLayoutControls'
 import DocumentLayoutControls, { DEFAULT_DOC_CONFIG } from '../preview/DocumentLayoutControls'
+import ExcelLayoutControls, { DEFAULT_EXCEL_CONFIG } from '../preview/ExcelLayoutControls'
 
 function Select({ label, value, onChange, options, hint }) {
   return (
@@ -119,6 +121,8 @@ export default function PrintPage({ onNavigate }) {
   const [cameraModalOpen, setCameraModalOpen] = useState(false)
   const [imgConfig, setImgConfig] = useState(DEFAULT_IMAGE_CONFIG)
   const [docConfig, setDocConfig] = useState(DEFAULT_DOC_CONFIG)
+  const [excelConfig, setExcelConfig] = useState(DEFAULT_EXCEL_CONFIG)
+  const [convertedPdfBlob, setConvertedPdfBlob] = useState(null)
 
   // Domain 2 & 3: Advanced Layout, Imposition, Media & PPD States
   const [nUp, setNUp] = useState(1)
@@ -168,24 +172,45 @@ export default function PrintPage({ onNavigate }) {
 
   const extOf = (name) => (name?.split('.').pop() || '').toLowerCase()
   const isImage = (name) => ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'heic', 'svg'].includes(extOf(name))
-  const isPdf = (name) => extOf(name) === 'pdf'
-  const isOfficeDoc = (name) => ['docx', 'doc', 'odt', 'rtf', 'pptx', 'ppt', 'xlsx', 'xls'].includes(extOf(name))
-  const isText = (name) => ['txt', 'csv', 'json', 'log', 'md'].includes(extOf(name))
+  const isExcelDoc = (name) => ['xlsx', 'xls', 'csv', 'ods'].includes(extOf(name))
+  const isOfficeDoc = (name) => ['docx', 'doc', 'odt', 'rtf', 'pptx', 'ppt', 'xlsx', 'xls', 'ods', 'csv'].includes(extOf(name))
+  const isText = (name) => ['txt', 'json', 'log', 'md'].includes(extOf(name))
 
   // ── Parse file on selection (PDF real pages / Office conversion / Image / Text) ──
   useEffect(() => {
     if (!file) {
+      clearPdfBitmapCache()
+      clearThumbCache()
       setPdfDoc(null)
+      setConvertedPdfBlob(null)
       setPageCount(1)
       setCurrentPage(1)
       setIsFlipped(false)
       setImgConfig(DEFAULT_IMAGE_CONFIG)
       setDocConfig(DEFAULT_DOC_CONFIG)
+      setExcelConfig(DEFAULT_EXCEL_CONFIG)
       return
     }
 
     let active = true
     const ext = extOf(file.name)
+
+    // Clear previous document preview immediately so stale preview NEVER lingers during conversion
+    clearPdfBitmapCache()
+    clearThumbCache()
+    setPdfDoc(null)
+    setConvertedPdfBlob(null)
+    setPageCount(1)
+    setCurrentPage(1)
+
+    // Automatically default Excel spreadsheet files to Landscape with clean defaults
+    if (isExcelDoc(file.name)) {
+      setOrientation('Landscape')
+      setExcelConfig({
+        ...DEFAULT_EXCEL_CONFIG,
+        orientation: 'Landscape',
+      })
+    }
 
     if (ext === 'pdf') {
       setLoadingPdf(true)
@@ -213,27 +238,45 @@ export default function PrintPage({ onNavigate }) {
       // Convert Office document to real PDF for instant 1:1 layout preview
       setLoadingPdf(true)
       api.convertForPreview(file)
-        .then((blob) => loadPdfDocument(blob))
+        .then((blob) => {
+          if (!active) return null
+          setConvertedPdfBlob(blob)
+          return loadPdfDocument(blob)
+        })
         .then((doc) => {
-          if (!active) return
+          if (!active || !doc) return
           setPdfDoc(doc)
           setPageCount(doc.numPages)
           setCurrentPage(1)
           return doc.getPage(1).then((page) => {
             if (!active) return
             const vp = page.getViewport({ scale: 1 })
-            setOrientation(vp.width > vp.height ? 'Landscape' : 'Portrait')
+            const autoOrient = isExcelDoc(file.name)
+              ? 'Landscape'
+              : (vp.width > vp.height ? 'Landscape' : 'Portrait')
+            setOrientation(autoOrient)
+            if (isExcelDoc(file.name)) {
+              setExcelConfig((prev) => ({
+                ...prev,
+                orientation: 'Landscape',
+                scaleMode: 'fit',
+                marginPreset: 'narrow',
+              }))
+            }
           }).catch(() => {})
         })
         .catch((err) => {
           console.warn('Cannot convert Office doc for preview:', err)
           if (!active) return
+          setConvertedPdfBlob(null)
           setPageCount(Math.max(1, Math.round(file.size / 150000)) || 1)
         })
         .finally(() => {
           if (active) setLoadingPdf(false)
         })
     } else if (isText(file.name)) {
+      setPdfDoc(null)
+      setConvertedPdfBlob(null)
       setOrientation('Portrait')
       const reader = new FileReader()
       reader.onload = (e) => {
@@ -246,6 +289,8 @@ export default function PrintPage({ onNavigate }) {
       }
       reader.readAsText(file)
     } else if (isImage(file.name)) {
+      setPdfDoc(null)
+      setConvertedPdfBlob(null)
       setPageCount(1)
       setCurrentPage(1)
       setColor(true)
@@ -309,7 +354,11 @@ export default function PrintPage({ onNavigate }) {
   // documents, "Photo Layout" for photos — so the two paths felt like different
   // applications.
   const docIsImage = !!file && isImage(file.name)
+  const docIsExcel = !!file && isExcelDoc(file.name)
+  const docIsDocument = !!file && !isImage(file.name) && !isExcelDoc(file.name)
   const docIsPaged = !!file && !isImage(file.name)
+
+  const activeDocConfig = docIsExcel ? excelConfig : docConfig
 
   // Same scaling list for both paths. "Fill page (Crop)" was previously
   // unreachable from the panel even though the backend always supported it.
@@ -327,19 +376,19 @@ export default function PrintPage({ onNavigate }) {
       ? 'Actual size'
       : 'Fit to page'
 
-  const scalingForDocs = docConfig.scaleMode === 'custom'
+  const scalingForDocs = activeDocConfig.scaleMode === 'custom'
     ? 'Custom'
-    : docConfig.scaleMode === 'actual'
+    : activeDocConfig.scaleMode === 'actual'
       ? 'Actual size'
-      : docConfig.scaleMode === 'shrink'
+      : activeDocConfig.scaleMode === 'shrink'
         ? 'Shrink to fit'
-        : docConfig.scaleMode === 'fill'
+        : activeDocConfig.scaleMode === 'fill'
           ? 'Fill page (Crop)'
           : 'Fit to page'
 
   const effectiveScalingUI = docIsImage
     ? scalingForImages
-    : docIsPaged && docConfig.scaleMode !== 'fit'
+    : docIsPaged && activeDocConfig.scaleMode !== 'fit'
       ? scalingForDocs
       : effectiveScaling
 
@@ -361,19 +410,24 @@ export default function PrintPage({ onNavigate }) {
           : v === 'Shrink to fit'
             ? 'shrink'
             : 'fit'
-      setDocConfig((prev) => ({ ...prev, scaleMode: mode }))
+      if (docIsExcel) {
+        setExcelConfig((prev) => ({ ...prev, scaleMode: mode }))
+      } else {
+        setDocConfig((prev) => ({ ...prev, scaleMode: mode }))
+      }
     }
     setScaling(v)
   }
 
   const effectivePageRange = useMemo(() => {
     if (!docIsPaged) return range
-    if (docConfig.pageRangeMode === 'current') return String(currentPage)
-    if (docConfig.pageRangeMode === 'custom') return docConfig.customRange
-    if (docConfig.pageSubset === 'odd') return 'odd'
-    if (docConfig.pageSubset === 'even') return 'even'
+    const cfg = docIsExcel ? excelConfig : docConfig
+    if (cfg.pageRangeMode === 'current') return String(currentPage)
+    if (cfg.pageRangeMode === 'custom') return cfg.customRange
+    if (cfg.pageSubset === 'odd') return 'odd'
+    if (cfg.pageSubset === 'even') return 'even'
     return range
-  }, [docIsPaged, docConfig, currentPage, range])
+  }, [docIsPaged, docIsExcel, excelConfig, docConfig, currentPage, range])
 
   // Pages per sheet is shared too: documents use CUPS number-up, photos use the
   // canvas grid (repeat), so the preview matches the sheet that comes out.
@@ -466,7 +520,8 @@ export default function PrintPage({ onNavigate }) {
     const ext = name.split('.').pop().toUpperCase()
     if (['PDF'].includes(ext)) return { icon: <IconFile size={20} />, bg: 'bg-err-100' }
     if (['PNG', 'JPG', 'JPEG', 'BMP', 'WEBP', 'HEIC', 'GIF', 'TIF', 'TIFF', 'SVG'].includes(ext)) return { icon: <IconImage size={20} />, bg: 'bg-sky-blue-100' }
-    if (['TXT', 'CSV'].includes(ext)) return { icon: <IconTxt size={20} />, bg: 'bg-lime-300' }
+    if (['TXT'].includes(ext)) return { icon: <IconTxt size={20} />, bg: 'bg-lime-300' }
+    if (['XLSX', 'XLS', 'CSV', 'ODS'].includes(ext)) return { icon: <IconTable size={20} />, bg: 'bg-lime-300' }
     return { icon: <IconFile size={20} />, bg: 'bg-vanilla-300' }
   }
 
@@ -483,7 +538,18 @@ export default function PrintPage({ onNavigate }) {
       toast('Unsupported file type', 'error')
       return
     }
-    setFile(f)
+    // Cleanly clear previous document states and bitmap caches immediately so previous file never lingers
+    clearPdfBitmapCache()
+    clearThumbCache()
+    setPdfDoc(null)
+    setConvertedPdfBlob(null)
+    setPageCount(1)
+    setCurrentPage(1)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    setFile(null)
+    setTimeout(() => {
+      setFile(f)
+    }, 10)
   }
 
   const handleSubmit = async () => {
@@ -498,7 +564,22 @@ export default function PrintPage({ onNavigate }) {
     if (submitting) return
 
     // Manual Duplex Assistant Workflow (for printers without hardware duplex like Epson L3210)
-    const isManualDuplexActive = manualDuplex || (docIsPaged && docConfig.duplexMode === 'manual')
+    // Scaling/rotation/margins etc. for documents come from DocumentLayoutControls
+    // (docConfig), not from the photo-path `effectiveScaling`/`range` state — those
+    // inputs are hidden entirely once a document (non-image) is loaded. Compute the
+    // same document fields used by the main submit path below so the two manual
+    // duplex passes (odd/even) don't silently drop the user's scaling/rotation/
+    // margin/booklet choice back to photo defaults.
+    const docScalingForManualDuplex = activeDocConfig.scaleMode === 'custom'
+      ? 'Custom'
+      : activeDocConfig.scaleMode === 'actual'
+        ? 'Actual size'
+        : activeDocConfig.scaleMode === 'shrink'
+          ? 'Shrink to fit'
+          : activeDocConfig.scaleMode === 'fill'
+            ? 'Fill page (Crop)'
+            : 'Fit to page'
+    const isManualDuplexActive = manualDuplex || (docIsPaged && activeDocConfig.duplexMode === 'manual')
     if (isManualDuplexActive) {
       setManualDuplexStep('odd')
       setManualDuplexModalOpen(true)
@@ -511,8 +592,8 @@ export default function PrintPage({ onNavigate }) {
         paperSize: effectivePaper,
         orientation: effectiveOrient,
         quality: effectiveQuality,
-        scaling: effectiveScaling,
-        pageRange: range || 'odd',
+        scaling: docIsPaged ? docScalingForManualDuplex : effectiveScaling,
+        pageRange: docIsPaged ? effectivePageRange : (range || 'odd'),
         priority: 3,
         printerId: selectedPrinter?.id || printerId,
         size: file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`,
@@ -521,7 +602,7 @@ export default function PrintPage({ onNavigate }) {
         mediaType,
         inputTray,
         borderless,
-        booklet: docIsPaged ? (docConfig.handlingMode === 'booklet' || booklet) : false,
+        booklet: docIsPaged ? (activeDocConfig.handlingMode === 'booklet' || booklet) : false,
         watermark,
         watermarkLayout,
         watermarkOpacity,
@@ -530,8 +611,21 @@ export default function PrintPage({ onNavigate }) {
         secureRelease,
         pin: secureRelease ? pin : '',
         department,
+        rotation: docIsPaged ? activeDocConfig.rotation : (imgConfig?.rotation || 0),
+        scalePercent: docIsPaged && activeDocConfig.scaleMode === 'custom' ? activeDocConfig.customScale : 100,
+        duplexMode: docIsPaged ? activeDocConfig.duplexMode : 'long',
+        reverseOrder: docIsPaged ? activeDocConfig.reverseOrder : false,
+        marginPreset: docIsPaged ? activeDocConfig.marginPreset : (borderless ? 'none' : 'default'),
+        margins: docIsPaged ? activeDocConfig.margins : undefined,
+        pageOrder: docIsPaged ? activeDocConfig.pageOrder : undefined,
+        printBorder: docIsPaged ? !!activeDocConfig.printBorder : false,
       }
-      submitJob(oddPayload, file).catch((e) => {
+      let oddFile = file
+      if (convertedPdfBlob && isOfficeDoc(file.name)) {
+        const pdfName = file.name.replace(/\.[^.]+$/, '') + '.pdf'
+        oddFile = new File([convertedPdfBlob], pdfName, { type: 'application/pdf' })
+      }
+      submitJob(oddPayload, oddFile).catch((e) => {
         toast(`Gagal kirim langkah 1 manual duplex: ${e.message}`, 'error')
       })
       return
@@ -550,20 +644,26 @@ export default function PrintPage({ onNavigate }) {
       } catch (err) {
         console.warn('Canvas compositing fallback to original:', err)
       }
+    } else if (convertedPdfBlob && isOfficeDoc(file.name)) {
+      // Exact pre-converted PDF from LibreOffice: matches preview 1:1
+      const pdfName = file.name.replace(/\.[^.]+$/, '') + '.pdf'
+      capturedFile = new File([convertedPdfBlob], pdfName, { type: 'application/pdf' })
     }
 
     // Images are composited on canvas from the shared Scaling choice, so map it
     // back to the backend's scaling vocabulary instead of forcing a value.
     const isCover = imgConfig?.fitMode === 'cover' || imgConfig?.sizePreset === 'fill'
-    const computedDocScaling = docConfig.scaleMode === 'custom'
+    const computedDocScaling = activeDocConfig.scaleMode === 'custom'
       ? 'Custom'
-      : docConfig.scaleMode === 'actual'
-        ? 'Actual size'
-        : docConfig.scaleMode === 'shrink'
-          ? 'Shrink to fit'
-          : docConfig.scaleMode === 'fill'
-            ? 'Fill page (Crop)'
-            : 'Fit to page'
+      : activeDocConfig.scaleMode === 'fitWidth'
+        ? 'Fit width'
+        : activeDocConfig.scaleMode === 'actual'
+          ? 'Actual size'
+          : activeDocConfig.scaleMode === 'shrink'
+            ? 'Shrink to fit'
+            : activeDocConfig.scaleMode === 'fill'
+              ? 'Fill page (Crop)'
+              : 'Fit to page'
 
     const jobScaling = docIsImage
       ? (isCover ? 'Fill page (Crop)' : imgConfig?.sizePreset === 'original' ? 'Actual size' : 'Fit to page')
@@ -574,7 +674,7 @@ export default function PrintPage({ onNavigate }) {
       pages: pageCount,
       copies,
       color: effColor,
-      duplex: (duplex && canDuplex) || (docIsPaged && (docConfig.duplexMode === 'long' || docConfig.duplexMode === 'short')),
+      duplex: (duplex && canDuplex) || (docIsPaged && (activeDocConfig.duplexMode === 'long' || activeDocConfig.duplexMode === 'short')),
       paperSize: effectivePaper,
       orientation: effectiveOrient,
       quality: effectiveQuality,
@@ -590,7 +690,7 @@ export default function PrintPage({ onNavigate }) {
       mediaType,
       inputTray,
       borderless,
-      booklet: docIsPaged ? (docConfig.handlingMode === 'booklet' || booklet) : false,
+      booklet: docIsPaged ? (activeDocConfig.handlingMode === 'booklet' || booklet) : false,
       watermark,
       watermarkLayout,
       watermarkOpacity,
@@ -600,12 +700,14 @@ export default function PrintPage({ onNavigate }) {
       secureRelease,
       pin: secureRelease ? pin : '',
       department,
-      rotation: docIsPaged ? docConfig.rotation : (imgConfig?.rotation || 0),
-      scalePercent: docIsPaged && docConfig.scaleMode === 'custom' ? docConfig.customScale : 100,
-      duplexMode: docIsPaged ? docConfig.duplexMode : 'long',
-      reverseOrder: docIsPaged ? docConfig.reverseOrder : false,
-      marginPreset: docIsPaged ? docConfig.marginPreset : (borderless ? 'none' : 'default'),
-      margins: docIsPaged ? docConfig.margins : undefined,
+      rotation: docIsPaged ? activeDocConfig.rotation : (imgConfig?.rotation || 0),
+      scalePercent: docIsPaged && activeDocConfig.scaleMode === 'custom' ? activeDocConfig.customScale : 100,
+      duplexMode: docIsPaged ? activeDocConfig.duplexMode : 'long',
+      reverseOrder: docIsPaged ? activeDocConfig.reverseOrder : false,
+      marginPreset: docIsPaged ? activeDocConfig.marginPreset : (borderless ? 'none' : 'default'),
+      margins: docIsPaged ? activeDocConfig.margins : undefined,
+      pageOrder: docIsPaged ? activeDocConfig.pageOrder : undefined,
+      printBorder: docIsPaged ? !!activeDocConfig.printBorder : false,
     }
 
     // Optimistic reset + navigate BEFORE the network call — feels instant
@@ -627,6 +729,15 @@ export default function PrintPage({ onNavigate }) {
       return
     }
     setManualDuplexStep('even')
+    const docScalingForManualDuplex = activeDocConfig.scaleMode === 'custom'
+      ? 'Custom'
+      : activeDocConfig.scaleMode === 'actual'
+        ? 'Actual size'
+        : activeDocConfig.scaleMode === 'shrink'
+          ? 'Shrink to fit'
+          : activeDocConfig.scaleMode === 'fill'
+            ? 'Fill page (Crop)'
+            : 'Fit to page'
     const evenPayload = {
       fileType: file.name.split('.').pop()?.toUpperCase() || 'PDF',
       pages: pageCount,
@@ -636,8 +747,8 @@ export default function PrintPage({ onNavigate }) {
       paperSize: effectivePaper,
       orientation: effectiveOrient,
       quality: effectiveQuality,
-      scaling: effectiveScaling,
-      pageRange: range || 'even',
+      scaling: docIsPaged ? docScalingForManualDuplex : effectiveScaling,
+      pageRange: docIsPaged ? effectivePageRange : (range || 'even'),
       priority: 3,
       printerId: selectedPrinter?.id || printerId,
       size: file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`,
@@ -646,12 +757,20 @@ export default function PrintPage({ onNavigate }) {
       mediaType,
       inputTray,
       borderless,
-      booklet,
+      booklet: docIsPaged ? (activeDocConfig.handlingMode === 'booklet' || booklet) : false,
       watermark,
       watermarkLayout,
       watermarkOpacity,
       manualDuplex: true,
       duplexStep: 'even',
+      rotation: docIsPaged ? activeDocConfig.rotation : (imgConfig?.rotation || 0),
+      scalePercent: docIsPaged && activeDocConfig.scaleMode === 'custom' ? activeDocConfig.customScale : 100,
+      duplexMode: docIsPaged ? activeDocConfig.duplexMode : 'long',
+      reverseOrder: docIsPaged ? activeDocConfig.reverseOrder : false,
+      marginPreset: docIsPaged ? activeDocConfig.marginPreset : (borderless ? 'none' : 'default'),
+      margins: docIsPaged ? activeDocConfig.margins : undefined,
+      pageOrder: docIsPaged ? activeDocConfig.pageOrder : undefined,
+      printBorder: docIsPaged ? !!activeDocConfig.printBorder : false,
     }
     submitJob(evenPayload, file)
       .then(() => {
@@ -703,6 +822,14 @@ export default function PrintPage({ onNavigate }) {
               </button>
             </div>
           )}
+          {/* Hidden persistent file input always mounted in DOM */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={onFileDrop}
+          />
+
           {!file ? (
             /* Upload Dropzone */
             <div
@@ -718,11 +845,13 @@ export default function PrintPage({ onNavigate }) {
                   openLoginModal('Please sign in to upload and print documents.')
                   return
                 }
-                fileInputRef.current?.click()
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = ''
+                  fileInputRef.current.click()
+                }
               }}
               className="relative border-2 border-dashed border-dark-black-900/60 rounded-[20px] p-10 flex flex-col items-center justify-center text-center cursor-pointer bg-vanilla-100 hover:bg-lime-300/30 transition-all duration-200 min-h-[360px]"
             >
-              <input ref={fileInputRef} type="file" className="hidden" onChange={onFileDrop} />
               <div className="w-16 h-16 rounded-[18px] border-2 border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900 mb-4 shadow-[4px_4px_0_0_rgba(56,56,56,1)]">
                 <IconUpload size={28} />
               </div>
@@ -787,15 +916,38 @@ export default function PrintPage({ onNavigate }) {
                     <IconEye size={15} /> Final Inspection
                   </button>
 
+                  {/* Direct Ganti File: opens native file picker immediately */}
                   <button
                     type="button"
                     onClick={() => {
+                      if (fileInputRef.current) {
+                        fileInputRef.current.value = ''
+                        fileInputRef.current.click()
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-[9px] border border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 font-figtree text-[12px] font-bold text-dark-black-900 transition-colors cursor-pointer shadow-[1px_1px_0_0_rgba(56,56,56,1)] active:translate-x-0.5 active:translate-y-0.5"
+                    title="Ganti dengan file lain"
+                  >
+                    Ganti File
+                  </button>
+
+                  {/* Hapus button: completely resets file state and returns to dropzone */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearPdfBitmapCache()
+                      clearThumbCache()
                       setFile(null)
+                      setPdfDoc(null)
+                      setConvertedPdfBlob(null)
+                      setPageCount(1)
+                      setCurrentPage(1)
                       if (fileInputRef.current) fileInputRef.current.value = ''
                     }}
-                    className="px-3 py-1.5 rounded-[9px] border border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 font-figtree text-[12px] font-medium text-dark-black-900 cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-[9px] border border-err-500/30 bg-white hover:bg-err-100 text-err-600 font-figtree text-[12px] font-medium transition-colors cursor-pointer"
+                    title="Hapus file dan kembali ke area upload"
                   >
-                    Replace
+                    Hapus
                   </button>
                 </div>
               </div>
@@ -836,8 +988,12 @@ export default function PrintPage({ onNavigate }) {
                 onToggleFlip={() => setIsFlipped(!isFlipped)}
                 imgConfig={imgConfig}
                 onUpdateImgConfig={handleUpdateImgConfig}
-                docConfig={docConfig}
-                onUpdateDocConfig={(patch) => setDocConfig((prev) => ({ ...prev, ...patch }))}
+                docConfig={docIsExcel ? excelConfig : docConfig}
+                onUpdateDocConfig={(patch) =>
+                  docIsExcel
+                    ? setExcelConfig((prev) => ({ ...prev, ...patch }))
+                    : setDocConfig((prev) => ({ ...prev, ...patch }))
+                }
                 onSetOrientation={handleOrientationChange}
                 orientations={orientations}
               />
@@ -1097,8 +1253,28 @@ export default function PrintPage({ onNavigate }) {
                   />
                 )}
 
+                {/* ── Excel Specific Layout & Table Sizing Card (for .xlsx, .xls, .csv, .ods) ── */}
+                {docIsExcel && (
+                  <ExcelLayoutControls
+                    config={excelConfig}
+                    onChange={setExcelConfig}
+                    totalPages={pageCount}
+                    currentPage={currentPage}
+                    paperDim={paperDim}
+                    orientation={effectiveOrient}
+                    onChangeOrientation={handleOrientationChange}
+                    copies={copies}
+                    onChangeCopies={setCopies}
+                    collate={collate}
+                    onChangeCollate={setCollate}
+                    canDuplex={canDuplex}
+                    duplex={duplex}
+                    onToggleDuplex={setDuplex}
+                  />
+                )}
+
                 {/* ── Document Page Handling & Layout Card (for PDF & documents — WPS Office Style) ── */}
-                {docIsPaged && (
+                {docIsDocument && (
                   <DocumentLayoutControls
                     config={docConfig}
                     onChange={setDocConfig}
@@ -1438,8 +1614,13 @@ export default function PrintPage({ onNavigate }) {
             <div className="mt-5 p-4 rounded-[14px] border-2 border-dark-black-900 bg-vanilla-100 flex flex-col gap-2">
               <div className="flex justify-between items-center text-[12.5px] font-figtree">
                 <span className="text-dark-black-900/60">Estimated Output:</span>
-                <span className="font-geist font-bold text-dark-black-900">
-                  {Math.ceil(pageCount / (nUp * (duplex && canDuplex ? 2 : 1))) * copies} physical sheet{Math.ceil(pageCount / (nUp * (duplex && canDuplex ? 2 : 1))) * copies > 1 ? 's' : ''}
+                <span className="font-geist font-bold text-dark-black-900 flex items-center gap-1.5 flex-wrap justify-end">
+                  <span>{Math.ceil(pageCount / (nUp * (duplex && canDuplex ? 2 : 1))) * copies} physical sheet{Math.ceil(pageCount / (nUp * (duplex && canDuplex ? 2 : 1))) * copies > 1 ? 's' : ''}</span>
+                  {copies > 1 && (
+                    <span className="text-[10.5px] font-bold text-dark-black-900 bg-lime-300 px-1.5 py-0.2 rounded-[4px] border border-dark-black-900/30">
+                      {collate ? `${copies} bundel (1,2,3...)` : `${copies} salinan/hal`}
+                    </span>
+                  )}
                 </span>
               </div>
               <div className="flex justify-between items-center text-[12.5px] font-figtree">
@@ -1526,7 +1707,7 @@ export default function PrintPage({ onNavigate }) {
         selectedPrinter={selectedPrinter}
         onSubmitJob={handleSubmit}
         imgConfig={imgConfig}
-        docConfig={docConfig}
+        docConfig={docIsExcel ? excelConfig : docConfig}
       />
 
       {/* ── Interactive Manual Duplex Guidance Modal ── */}

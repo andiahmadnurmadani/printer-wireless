@@ -136,3 +136,44 @@ func joinNonEmpty(vals []string) string {
 	}
 	return strings.Join(clean, ", ")
 }
+
+// ippBuildCancelJob builds an IPP Cancel-Job (0x0008) request targeting a
+// specific job id on a printer URI.
+func ippBuildCancelJob(printerURI string, jobID int) []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0x01, 0x01})                        // IPP/1.1
+	binary.Write(&b, binary.BigEndian, uint16(0x0008)) // Cancel-Job
+	binary.Write(&b, binary.BigEndian, uint32(1))      // request-id
+
+	b.WriteByte(0x01) // operation attributes group
+	writeIppAttr(&b, 0x47, "attributes-charset", "utf-8")
+	writeIppAttr(&b, 0x48, "attributes-natural-language", "en")
+	writeIppAttr(&b, 0x45, "printer-uri", printerURI)
+	writeIppInt(&b, 0x21, "job-id", int32(jobID))
+	writeIppAttr(&b, 0x42, "requesting-user-name", "kroomprint")
+	b.WriteByte(0x03) // end-of-attributes
+	return b.Bytes()
+}
+
+// CancelJobIPP sends an IPP Cancel-Job to cupsd for the given job id. It is
+// the authoritative way to stop a job: unlike mutating the KroomPrint job
+// record alone, this actually tells cupsd (and the backend/filter chain) to
+// abort the physical print. Returns nil on "successful-ok" OR when the job
+// is already gone/completed (client-error-not-found, client-error-not-possible)
+// since both mean there's nothing left to cancel.
+func CancelJobIPP(host, printerName string, jobID int, timeout time.Duration) error {
+	printerURI := "ipp://localhost/printers/" + url.PathEscape(printerName)
+	body := ippBuildCancelJob(printerURI, jobID)
+	resp, err := ippPostBytes(host, "/", body, timeout)
+	if err != nil {
+		return fmt.Errorf("ipp cancel-job %s/%d: %w", printerName, jobID, err)
+	}
+	switch {
+	case resp.Status < 0x0100: // successful-ok family
+		return nil
+	case resp.Status == 0x0406, resp.Status == 0x0507: // not-found / not-possible: job already finished/purged
+		return nil
+	default:
+		return fmt.Errorf("ipp cancel-job %s/%d: status 0x%04X", printerName, jobID, resp.Status)
+	}
+}

@@ -52,6 +52,8 @@ export default function FinalPrintModal({
   const [imgNatural, setImgNatural] = useState({ width: 1200, height: 800 })
   const [textContent, setTextContent] = useState('')
 
+  const [textPages, setTextPages] = useState([])
+
   const isPdf = !!pdfDoc || fileType === 'PDF' || file?.name?.toLowerCase().endsWith('.pdf')
   const isImage = ['PNG', 'JPG', 'JPEG', 'WEBP', 'BMP', 'HEIC', 'SVG'].includes(fileType) ||
     /\.(png|jpe?g|webp|bmp|heic|svg)$/i.test(file?.name || '')
@@ -81,7 +83,17 @@ export default function FinalPrintModal({
     }
     if (isText) {
       const reader = new FileReader()
-      reader.onload = (e) => setTextContent(e.target.result || '')
+      reader.onload = (e) => {
+        const text = e.target.result || ''
+        setTextContent(text)
+        const lines = text.split('\n')
+        const pages = []
+        const perPage = 40
+        for (let i = 0; i < lines.length; i += perPage) {
+          pages.push(lines.slice(i, i + perPage).join('\n'))
+        }
+        setTextPages(pages.length > 0 ? pages : [text])
+      }
       reader.readAsText(file)
     }
   }, [file, isImage, isText])
@@ -99,20 +111,71 @@ export default function FinalPrintModal({
     }
   }, [isOpen, isPdf, pdfDoc, activePage, zoom, quality])
 
+  // Calculate paper width in modal based on paper base scale & zoom
+  const modalPaperWidth = Math.round(
+    (orientation === 'Landscape' ? 480 : 340) * paperDim.baseScale * (zoom / 100)
+  )
+
+  const modalPaperDim = useMemo(() => {
+    return {
+      ...paperDim,
+      baseWidthPx: modalPaperWidth,
+      safeZoneInsetPx: Math.max(4, Math.round((modalPaperWidth / (paperDim.widthMm || 210)) * 5)),
+    }
+  }, [paperDim, modalPaperWidth])
+
+  // Precise Document margin padding in preview pixels matching physical millimeters
+  const docPadding = useMemo(() => {
+    if (isImage) return '0px'
+    const pxPerMm = modalPaperWidth / (paperDim.widthMm || 210)
+    switch (docConfig?.marginPreset) {
+      case 'none':
+        return '0px'
+      case 'narrow':
+      case 'minimum':
+        return `${Math.round(3 * pxPerMm)}px`
+      case 'default':
+        return `${Math.round(5 * pxPerMm)}px`
+      case 'custom':
+        if (docConfig?.margins) {
+          return `${Math.round((docConfig.margins.top || 0) * pxPerMm)}px ${Math.round((docConfig.margins.right || 0) * pxPerMm)}px ${Math.round((docConfig.margins.bottom || 0) * pxPerMm)}px ${Math.round((docConfig.margins.left || 0) * pxPerMm)}px`
+        }
+        return `${Math.round(5 * pxPerMm)}px`
+      default:
+        return `${Math.round(5 * pxPerMm)}px`
+    }
+  }, [isImage, modalPaperWidth, paperDim.widthMm, docConfig?.marginPreset, docConfig?.margins])
+
+  // Visual scaling transform matching DocumentLayoutControls
+  const docTransform = useMemo(() => {
+    if (isImage) return 'none'
+    const rot = (docConfig?.rotation || 0) % 360
+    let scaleStr = 'scale(1.0)'
+    if (docConfig?.scaleMode === 'custom') {
+      const s = Math.max(0.25, Math.min(2.0, (docConfig?.customScale || 100) / 100))
+      scaleStr = `scale(${s})`
+    } else if (docConfig?.scaleMode === 'fitSheet') {
+      scaleStr = 'scale(0.88)'
+    } else if (docConfig?.scaleMode === 'shrink') {
+      scaleStr = 'scale(0.92)'
+    }
+    return rot !== 0 ? `${scaleStr} rotate(${rot}deg)` : scaleStr
+  }, [isImage, docConfig?.scaleMode, docConfig?.customScale, docConfig?.rotation])
+
   // Scaling styles
   const scalingStyles = useMemo(() => {
     switch (scaling) {
       case 'Shrink to fit':
         return {
-          wrapperClass: 'p-6 flex items-center justify-center',
-          transform: 'scale(0.86)',
+          wrapperClass: 'p-0 flex items-center justify-center',
+          transform: 'scale(0.88)',
           imgClass: 'object-contain max-h-full max-w-full rounded-[2px]',
-          label: 'Shrink to Fit (86% + Safety Margins)',
+          label: 'Shrink to Fit (88% + Safety Margins)',
         }
       case 'Actual size':
         return {
-          wrapperClass: 'p-2 flex items-center justify-center overflow-hidden',
-          transform: 'scale(1.16)',
+          wrapperClass: 'p-0 flex items-center justify-center overflow-hidden',
+          transform: 'scale(1.12)',
           imgClass: 'object-none max-h-none max-w-none',
           label: 'Actual Size 1:1 (Unscaled 100%)',
         }
@@ -126,7 +189,7 @@ export default function FinalPrintModal({
       case 'Fit to page':
       default:
         return {
-          wrapperClass: 'p-3 flex items-center justify-center',
+          wrapperClass: 'p-0 flex items-center justify-center',
           transform: 'scale(1.0)',
           imgClass: 'object-contain max-h-full max-w-full',
           label: 'Fit to Page (Standard 5mm Margins)',
@@ -161,18 +224,6 @@ export default function FinalPrintModal({
     }
     return { filter: filter.trim(), opacity }
   }, [quality, simulateMono])
-
-  // Calculate paper width in modal based on paper base scale & zoom
-  const modalPaperWidth = Math.round(
-    (orientation === 'Landscape' ? 480 : 340) * paperDim.baseScale * (zoom / 100)
-  )
-
-  const modalPaperDim = useMemo(() => {
-    return {
-      ...paperDim,
-      baseWidthPx: modalPaperWidth,
-    }
-  }, [paperDim, modalPaperWidth])
 
   const imageLayout = useMemo(() => {
     if (!isImage) return null
@@ -309,15 +360,15 @@ export default function FinalPrintModal({
                 }`}
               >
                 {/* 5 mm printable area guide, scaled to the real sheet */}
-                {showMargins && (
+                {showMargins && !isImage && (
                   <div
-                    style={{ inset: `${paperDim.safeZoneInsetPx}px` }}
+                    style={{ inset: `${modalPaperDim.safeZoneInsetPx}px` }}
                     className="absolute border border-dashed border-sky-blue-500/60 pointer-events-none z-20 flex flex-col justify-between p-1"
                   >
-                    <span className="text-[7.5px] font-geist font-bold text-sky-blue-500/80 tracking-widest leading-none">
-                      PRINTABLE AREA ({paperDim.name})
+                    <span className="text-[7.5px] font-geist font-bold text-sky-blue-500/80 tracking-wider leading-none">
+                      PRINTABLE SAFE ZONE ({paperDim.name})
                     </span>
-                    <span className="text-[7.5px] font-geist text-sky-blue-500/80 text-right tracking-widest leading-none">
+                    <span className="text-[7.5px] font-geist text-sky-blue-500/80 text-right tracking-wider leading-none">
                       {paperDim.widthMm} × {paperDim.heightMm} mm · {orientation}
                     </span>
                   </div>
@@ -326,32 +377,18 @@ export default function FinalPrintModal({
                 {/* Content */}
                 <div
                   style={visualFilter}
-                  className={`w-full h-full flex-1 relative overflow-hidden bg-white ${
-                    isImage ? 'p-0' : `${scalingStyles.wrapperClass} flex items-center justify-center`
-                  }`}
+                  className="w-full h-full flex-1 relative overflow-hidden bg-white flex items-center justify-center"
                 >
                   {/* Watermark Overlay */}
                   <WatermarkOverlay watermark={watermark} layout={watermarkLayout} opacity={watermarkOpacity} />
 
                   <div
                     style={{
-                      transform: isImage
-                        ? 'none'
-                        : docConfig?.scaleMode === 'custom'
-                          ? `scale(${Math.max(0.25, Math.min(2.0, (docConfig?.customScale || 100) / 100))}) rotate(${docConfig?.rotation || 0}deg)`
-                          : docConfig?.rotation
-                            ? `${scalingStyles.transform} rotate(${docConfig.rotation}deg)`
-                            : scalingStyles.transform,
-                      padding: !isImage && docConfig?.marginPreset === 'none'
-                        ? '0px'
-                        : !isImage && docConfig?.marginPreset === 'minimum'
-                          ? '6px'
-                          : !isImage && docConfig?.marginPreset === 'custom' && docConfig?.margins
-                            ? `${docConfig.margins.top}px ${docConfig.margins.right}px ${docConfig.margins.bottom}px ${docConfig.margins.left}px`
-                            : undefined,
+                      transform: docTransform,
+                      padding: docPadding,
                       transition: 'transform 0.15s ease-out, padding 0.15s ease-out',
                     }}
-                    className="w-full h-full flex items-center justify-center"
+                    className="w-full h-full flex items-center justify-center overflow-hidden"
                   >
                     {nUp > 1 ? (
                       /* N-Up Multi-Page Grid Simulation */
@@ -463,15 +500,34 @@ export default function FinalPrintModal({
                       <div className="w-full h-full p-6 overflow-hidden flex flex-col justify-between">
                         <div className="border-b border-dark-black-900/10 pb-1.5 mb-3 flex justify-between font-geist text-[9px] text-dark-black-900/50">
                           <span>{file?.name}</span>
-                          <span>Page {activePage} of {totalPages}</span>
+                          <span>Page {activePage} of {Math.max(1, textPages.length)}</span>
                         </div>
                         <pre className="font-geist text-[9.5px] leading-relaxed text-dark-black-900/80 whitespace-pre-wrap break-words overflow-hidden font-normal flex-1">
-                          {textContent.slice(0, 1800)}
+                          {textPages[activePage - 1] || textContent}
                         </pre>
+                        <div className="border-t border-dark-black-900/15 pt-1.5 mt-auto flex justify-between font-geist text-[8px] text-dark-black-900/50">
+                          <span>{paperDim.name} · {orientation}</span>
+                          <span>KroomPrint Visual Inspection</span>
+                        </div>
                       </div>
                     ) : (
-                      <div className="p-8 text-center font-geist text-[12px] text-dark-black-900/50">
-                        {fileType} Document · Sheet {activePage}
+                      <div className="w-full h-full p-6 flex flex-col justify-between">
+                        <div>
+                          <div className="w-16 h-3.5 bg-dark-black-900/80 rounded-[2px] mb-3" />
+                          <div className="w-3/4 h-3 bg-dark-black-900/35 rounded-[2px] mb-2" />
+                          <div className="w-full h-2.5 bg-dark-black-900/20 rounded-[2px] mb-1.5" />
+                          <div className="w-5/6 h-2.5 bg-dark-black-900/20 rounded-[2px] mb-1.5" />
+                          <div className="w-4/5 h-2.5 bg-dark-black-900/20 rounded-[2px] mb-4" />
+                          <div className="w-full h-32 bg-vanilla-300/40 rounded-[8px] border-2 border-dashed border-dark-black-900/20 flex flex-col items-center justify-center text-dark-black-900/60 font-geist text-[12px] p-4 text-center">
+                            <span className="font-bold text-dark-black-900 text-[13px]">{fileType} Document</span>
+                            <span className="text-[10px] mt-1 text-dark-black-900/60">Scaled to physical {paperDim.name} · {orientation}</span>
+                            <span className="text-[9.5px] mt-0.5 text-dark-black-900/40 truncate max-w-[240px]">{file?.name}</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between font-geist text-[9px] text-dark-black-900/50 pt-2 border-t border-dark-black-900/10">
+                          <span>{file?.name}</span>
+                          <span>Sheet {activePage} of {totalPages}</span>
+                        </div>
                       </div>
                     )}
                   </div>

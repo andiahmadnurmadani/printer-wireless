@@ -133,6 +133,10 @@ export default function PageThumbnails({
 
 const globalThumbCache = new Map()
 
+export function clearThumbCache() {
+  globalThumbCache.clear()
+}
+
 function PdfThumbCanvas({ pdfDoc, pageNum }) {
   const canvasRef = useRef(null)
   const [rendered, setRendered] = useState(false)

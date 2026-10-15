@@ -168,7 +168,11 @@ export default function DocumentLayoutControls({
               <button
                 type="button"
                 onClick={() => onChangeCollate(!collate)}
-                className="flex items-center gap-2 px-3 py-2 rounded-[9px] border border-dark-black-900/30 bg-white hover:border-dark-black-900 transition-all cursor-pointer"
+                className={`flex items-center gap-2 px-3 py-2 rounded-[9px] border transition-all cursor-pointer ${
+                  copies > 1 && collate
+                    ? 'border-dark-black-900 bg-lime-300/20 shadow-xs'
+                    : 'border-dark-black-900/30 bg-white hover:border-dark-black-900'
+                }`}
               >
                 <span
                   className={`w-4 h-4 rounded-[4px] border-2 border-dark-black-900 flex items-center justify-center transition-colors ${
@@ -178,11 +182,20 @@ export default function DocumentLayoutControls({
                   {collate && <IconCheck size={11} />}
                 </span>
                 <div className="flex flex-col text-left">
-                  <span className="font-figtree text-[12px] font-bold text-dark-black-900">
-                    Urutkan (Collate)
+                  <span className="font-figtree text-[12px] font-bold text-dark-black-900 flex items-center gap-1.5">
+                    <span>Urutkan (Collate)</span>
+                    {copies > 1 && (
+                      <span className="font-geist text-[9.5px] font-bold px-1.5 py-0.2 rounded-[4px] bg-dark-black-900 text-lime-300">
+                        {collate ? 'Per Bundel' : 'Per Halaman'}
+                      </span>
+                    )}
                   </span>
-                  <span className="font-geist text-[10px] text-dark-black-900/60">
-                    {collate ? 'Cetak per bundel (1,2,3... 1,2,3...)' : 'Cetak per halaman (1,1... 2,2...)'}
+                  <span className="font-geist text-[10px] text-dark-black-900/70">
+                    {copies <= 1
+                      ? 'Aktif saat salinan > 1 (1 bundel)'
+                      : collate
+                        ? 'Cetak per bundel (1,2,3... 1,2,3...)'
+                        : 'Cetak per halaman (1,1... 2,2...)'}
                   </span>
                 </div>
               </button>
@@ -355,8 +368,8 @@ export default function DocumentLayoutControls({
           <div className="flex flex-col gap-2">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
               {[
-                { id: 'fit', label: 'Paskan', hint: 'Paskan ke area cetak kertas' },
-                { id: 'actual', label: 'Ukuran Sebenarnya', hint: 'Ukuran 100% tanpa diubah' },
+                { id: 'fit', label: 'Paskan Halaman', hint: 'Paskan seluruh dokumen secara utuh proporsional tanpa terpotong' },
+                { id: 'actual', label: 'Ukuran Asli 100%', hint: 'Ukuran 100% tanpa diubah' },
                 { id: 'shrink', label: 'Kecilkan', hint: 'Kecilkan halaman yang terlalu besar' },
                 { id: 'custom', label: 'Skala Kustom', hint: 'Tentukan persentase sendiri' },
               ].map((mode) => (
@@ -370,7 +383,7 @@ export default function DocumentLayoutControls({
                       update({ scaleMode: mode.id })
                     }
                   }}
-                  className={`py-2 px-1 rounded-[9px] border-2 font-figtree text-[12px] font-bold transition-all cursor-pointer text-center ${
+                  className={`py-2 px-1 rounded-[9px] border-2 font-figtree text-[11.5px] sm:text-[12px] font-bold transition-all cursor-pointer text-center ${
                     config.scaleMode === mode.id
                       ? 'border-dark-black-900 bg-dark-black-900 text-lime-300 shadow-[1px_1px_0_0_rgba(56,56,56,1)]'
                       : 'border-dark-black-900/25 bg-white hover:border-dark-black-900 text-dark-black-900'

@@ -53,6 +53,12 @@ type JobOptions struct {
 	PPDSettings map[string]string
 	Rotation     int
 	ScalePercent int
+	// PageOrder controls the N-Up imposition direction: "horizontal" (lrtb,
+	// default) or "vertical" (tblr). Only meaningful when NUp > 1.
+	PageOrder string
+	// PrintBorder draws a hairline border around each imposed page when
+	// NUp > 1, matching the panel's "Cetak Batas Halaman" checkbox.
+	PrintBorder bool
 }
 
 // NormalizeHost strips scheme/path from a CUPS URL -> "host:port".
@@ -323,7 +329,10 @@ func buildJobAttrs(opts JobOptions) []jobAttr {
 
 	// ── Imposition, page selection & finishing ─────────────────────────────
 	if opts.NUp > 1 {
-		attrs = append(attrs, jobInt("number-up", int32(opts.NUp)), jobKeyword("number-up-layout", "lrtb"))
+		attrs = append(attrs, jobInt("number-up", int32(opts.NUp)), jobKeyword("number-up-layout", NumberUpLayoutForUI(opts.PageOrder)))
+		if opts.PrintBorder {
+			attrs = append(attrs, jobKeyword("page-border", "single"))
+		}
 	}
 	if opts.Collate {
 		attrs = append(attrs,
@@ -421,6 +430,16 @@ func orientationRequested(o string) int32 {
 	}
 }
 
+// NumberUpLayoutForUI maps the panel's "Urutan" choice (Horisontal/Vertikal) to the
+// IPP number-up-layout keyword. "lrtb" (left-to-right, top-to-bottom) is the
+// default/horizontal reading order; "tblr" reads top-to-bottom first.
+func NumberUpLayoutForUI(pageOrder string) string {
+	if strings.EqualFold(strings.TrimSpace(pageOrder), "vertical") {
+		return "tblr"
+	}
+	return "lrtb"
+}
+
 // qualityToIPPInt maps a panel quality label to the IPP print-quality enum.
 func qualityToIPPInt(q string) int32 {
 	switch strings.ToLower(strings.TrimSpace(q)) {
@@ -508,7 +527,7 @@ func reservedJobOption(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "pagesize", "mediatype", "ink", "inputslot", "media", "sides", "collate",
 		"booklet", "print-quality", "orientation-requested", "print-scaling",
-		"fitplot", "number-up", "number-up-layout", "page-set", "copies",
+		"fitplot", "number-up", "number-up-layout", "page-border", "page-set", "copies",
 		"multiple-document-handling", "page-ranges", "job-name",
 		"requesting-user-name", "document-format", "printer-uri":
 		return true

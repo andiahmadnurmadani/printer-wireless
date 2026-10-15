@@ -1701,6 +1701,18 @@ type createJobReq struct {
 	Rotation      int    `json:"rotation,omitempty"`
 	ScalePercent  int    `json:"scalePercent,omitempty"`
 	ReverseOrder  bool   `json:"reverseOrder,omitempty"`
+	MarginPreset  string `json:"marginPreset,omitempty"`
+	Margins       *printMargins `json:"margins,omitempty"`
+	PageOrder     string `json:"pageOrder,omitempty"`
+	PrintBorder   bool   `json:"printBorder,omitempty"`
+}
+
+// printMargins mirrors the frontend's { top, bottom, left, right } shape (mm).
+type printMargins struct {
+	Top    float64 `json:"top"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+	Right  float64 `json:"right"`
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
@@ -1941,6 +1953,8 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		PPDSettings:  req.PPDSettings,
 		Rotation:     req.Rotation,
 		ScalePercent: req.ScalePercent,
+		PageOrder:    req.PageOrder,
+		PrintBorder:  req.PrintBorder,
 	}
 	if req.Duplex {
 		if strings.EqualFold(req.DuplexMode, "short") || strings.EqualFold(req.DuplexMode, "two-sided-short-edge") {
@@ -1958,7 +1972,9 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 
 	isGray := opts.ColorMode == "grayscale" || opts.ColorMode == "monochrome" || !req.Color
 
-	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling, req.ScalePercent, req.Rotation)
+	marginTop, marginRight, marginBottom, marginLeft := resolvePrintMarginsMM(req.MarginPreset, req.Margins)
+
+	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling, req.ScalePercent, req.Rotation, marginTop, marginRight, marginBottom, marginLeft)
 	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
 		opts.FileType = "application/pdf"
 		// Both rasterized images and PDFs are now formatted and oriented by normalizeDocument
@@ -1977,6 +1993,21 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	}
 	if strings.TrimSpace(opts.Watermark) != "" {
 		filePath = applyWatermark(filePath, opts.Watermark, opts.WatermarkLayout, opts.WatermarkOpacity, s.log)
+	}
+
+	// Multi-copy & Collation expansion:
+	// Desktop inkjet printers (Epson L3210/L3250) lack hardware collators and PPD *cupsCollate support.
+	// When multiple copies are requested, expand the PDF pages in software so that:
+	// - opts.Collate=true  -> Bundles in sequence: 1,2,3... 1,2,3...
+	// - opts.Collate=false -> Grouped pages: 1,1... 2,2... 3,3...
+	// Setting opts.Copies=1 ensures CUPS streams the pre-collated sheets directly without driver failure.
+	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" && opts.Copies > 1 {
+		colPDF, newCopies, newRange := applyCollationAndCopies(filePath, opts.Copies, opts.Collate, opts.PageRange, s.log)
+		if colPDF != filePath {
+			filePath = colPDF
+			opts.Copies = newCopies
+			opts.PageRange = newRange
+		}
 	}
 
 	// Send original file directly to CUPS. For PDFs, CUPS uses its native
@@ -2058,7 +2089,10 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 				// Same finishing options the IPP path sends, so a fallback to lp
 				// does not silently drop N-Up / page range / collate / booklet.
 				if opts.NUp > 1 {
-					flags = append(flags, "-o", fmt.Sprintf("number-up=%d", opts.NUp), "-o", "number-up-layout=lrtb")
+					flags = append(flags, "-o", fmt.Sprintf("number-up=%d", opts.NUp), "-o", "number-up-layout="+discovery.NumberUpLayoutForUI(opts.PageOrder))
+					if opts.PrintBorder {
+						flags = append(flags, "-o", "page-border=single")
+					}
 				}
 				if opts.Collate {
 					flags = append(flags, "-o", "Collate=True")
@@ -2314,25 +2348,489 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// resolvePrintMarginsMM converts the frontend's margin preset/custom values
+// into concrete top/right/bottom/left millimeters. Mirrors the presets the
+// panel itself writes (DocumentLayoutControls.jsx): default=5mm, none=0mm,
+// minimum=3mm; "custom" uses the per-side values the user typed.
+func resolvePrintMarginsMM(preset string, custom *printMargins) (top, right, bottom, left float64) {
+	switch strings.ToLower(strings.TrimSpace(preset)) {
+	case "none":
+		return 0, 0, 0, 0
+	case "minimum":
+		return 3, 3, 3, 3
+	case "custom":
+		if custom != nil {
+			return custom.Top, custom.Right, custom.Bottom, custom.Left
+		}
+		return 5, 5, 5, 5
+	default: // "default" or unset
+		return 5, 5, 5, 5
+	}
+}
+
+// prepareSpreadsheetLandscape adjusts XLSX worksheet page setups cleanly using Python's standard library
+// so LibreOffice Calc natively exports the spreadsheet in full Landscape A4 fitting columns onto the page.
+func prepareSpreadsheetLandscape(src string, log *log.Logger) string {
+	ext := strings.ToLower(filepath.Ext(src))
+	if ext != ".xlsx" {
+		return src
+	}
+	pyCmd, err := exec.LookPath("python3")
+	if err != nil {
+		return src
+	}
+	dst := strings.TrimSuffix(src, ext) + ".land.xlsx"
+	pyScript := `import sys, zipfile, xml.etree.ElementTree as ET
+try:
+    zin = zipfile.ZipFile(sys.argv[1], 'r')
+    zout = zipfile.ZipFile(sys.argv[2], 'w')
+    ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    ET.register_namespace('', ns)
+    for item in zin.infolist():
+        data = zin.read(item.filename)
+        if item.filename.startswith('xl/worksheets/sheet') and item.filename.endswith('.xml'):
+            try:
+                root = ET.fromstring(data)
+                spr = root.find(f'{{{ns}}}sheetPr')
+                if spr is None:
+                    spr = ET.Element(f'{{{ns}}}sheetPr')
+                    root.insert(0, spr)
+                psPr = spr.find(f'{{{ns}}}pageSetUpPr')
+                if psPr is None:
+                    psPr = ET.SubElement(spr, f'{{{ns}}}pageSetUpPr')
+                psPr.set('fitToPage', '1')
+
+                cols = root.findall(f'.//{{{ns}}}col')
+                if cols:
+                    tot = sum([float(c.attrib.get('width', 10)) for c in cols])
+                    if tot > 0 and tot < 135:
+                        ratio = min(1.35, 138.0 / tot)
+                        for c in cols:
+                            w = float(c.attrib.get('width', 10))
+                            c.set('width', f'{w * ratio:.2f}')
+
+                pm = root.find(f'{{{ns}}}pageMargins')
+                if pm is not None:
+                    pm.set('left', '0.4')
+                    pm.set('right', '0.4')
+                    pm.set('top', '0.4')
+                    pm.set('bottom', '0.4')
+
+                po = root.find(f'{{{ns}}}printOptions')
+                if po is None:
+                    if pm is not None:
+                        idx = list(root).index(pm)
+                        po = ET.Element(f'{{{ns}}}printOptions')
+                        root.insert(idx, po)
+                    else:
+                        po = ET.SubElement(root, f'{{{ns}}}printOptions')
+                po.set('horizontalCentered', '1')
+
+                ps = root.find(f'{{{ns}}}pageSetup')
+                if ps is None:
+                    idx = -1
+                    if pm is not None:
+                        idx = list(root).index(pm) + 1
+                    else:
+                        sd = root.find(f'{{{ns}}}sheetData')
+                        if sd is not None:
+                            idx = list(root).index(sd) + 1
+                    ps = ET.Element(f'{{{ns}}}pageSetup')
+                    if idx >= 0:
+                        root.insert(idx, ps)
+                    else:
+                        root.append(ps)
+
+                ps.attrib.pop('scale', None)
+                ps.set('orientation', 'landscape')
+                ps.set('paperSize', '9')
+                ps.set('fitToWidth', '1')
+                ps.set('fitToHeight', '0')
+                data = ET.tostring(root, encoding='utf-8')
+            except Exception:
+                pass
+        zout.writestr(item, data)
+    zin.close()
+    zout.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+`
+	cmd := exec.Command(pyCmd, "-c", pyScript, src, dst)
+	if err := cmd.Run(); err == nil {
+		if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
+			if log != nil {
+				log.Printf("prepareSpreadsheetLandscape: formatted %s -> %s for landscape print", filepath.Base(src), filepath.Base(dst))
+			}
+			return dst
+		}
+	}
+	return src
+}
+
+// pruneBlankPDFPages checks all pages of a generated PDF and removes any blank
+// or stray overflow pages (pages containing fewer than 15 characters of text)
+// using Ghostscript's -sPageList option.
+func pruneBlankPDFPages(src string, log *log.Logger) string {
+	infoCmd, err := exec.LookPath("pdfinfo")
+	if err != nil {
+		return src
+	}
+	txtCmd, err := exec.LookPath("pdftotext")
+	if err != nil {
+		return src
+	}
+	gsCmd, err := exec.LookPath("gs")
+	if err != nil {
+		return src
+	}
+
+	out, err := exec.Command(infoCmd, src).CombinedOutput()
+	if err != nil {
+		return src
+	}
+	numPages := 1
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "Pages:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if n, e := strconv.Atoi(fields[1]); e == nil && n > 0 {
+					numPages = n
+				}
+			}
+			break
+		}
+	}
+	if numPages <= 1 {
+		return src
+	}
+
+	var validPages []string
+	for p := 1; p <= numPages; p++ {
+		txtOut, err := exec.Command(txtCmd, "-f", strconv.Itoa(p), "-l", strconv.Itoa(p), src, "-").CombinedOutput()
+		if err != nil {
+			validPages = append(validPages, strconv.Itoa(p))
+			continue
+		}
+		clean := strings.Join(strings.Fields(string(txtOut)), " ")
+		if len(clean) >= 15 {
+			validPages = append(validPages, strconv.Itoa(p))
+		}
+	}
+
+	// If any blank/stray pages were found, re-export only the valid content pages
+	if len(validPages) > 0 && len(validPages) < numPages {
+		dst := strings.TrimSuffix(src, filepath.Ext(src)) + ".clean.pdf"
+		pageList := "-sPageList=" + strings.Join(validPages, ",")
+		args := []string{"-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite", pageList, "-sOutputFile=" + dst, src}
+		if gsOut, err := exec.Command(gsCmd, args...).CombinedOutput(); err == nil {
+			if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
+				if log != nil {
+					log.Printf("pruneBlankPDFPages: stripped %d blank/overflow pages from %s (%d -> %d pages)",
+						numPages-len(validPages), filepath.Base(src), numPages, len(validPages))
+				}
+				_ = os.Remove(src)
+				_ = os.Rename(dst, src)
+				return src
+			}
+		} else if log != nil {
+			log.Printf("pruneBlankPDFPages: gs failed: %v (%s)", err, strings.TrimSpace(string(gsOut)))
+		}
+	}
+	return src
+}
+
+// buildGSPageList builds a Ghostscript -sPageList compatible argument from pageRange ("1-3,5", "odd", "even").
+func buildGSPageList(src string, pageRange string) string {
+	pr := strings.TrimSpace(pageRange)
+	if pr == "" || strings.EqualFold(pr, "all") {
+		return ""
+	}
+	low := strings.ToLower(pr)
+	if low == "odd" || low == "even" {
+		numPages := 1
+		if infoCmd, err := exec.LookPath("pdfinfo"); err == nil {
+			if out, err := exec.Command(infoCmd, src).Output(); err == nil {
+				for _, line := range strings.Split(string(out), "\n") {
+					if strings.HasPrefix(line, "Pages:") {
+						fields := strings.Fields(line)
+						if len(fields) >= 2 {
+							if n, perr := strconv.Atoi(fields[1]); perr == nil && n > 0 {
+								numPages = n
+							}
+						}
+					}
+				}
+			}
+		}
+		var pages []string
+		start := 1
+		if low == "even" {
+			start = 2
+		}
+		for p := start; p <= numPages; p += 2 {
+			pages = append(pages, strconv.Itoa(p))
+		}
+		return strings.Join(pages, ",")
+	}
+	// Sanitize custom ranges like "1-3, 5" -> "1-3,5"
+	cleaned := strings.ReplaceAll(pr, " ", "")
+	return cleaned
+}
+
+// applyCollationAndCopies handles multi-copy expansion for desktop/raster printers
+// where CUPS and the driver lack hardware collation support (e.g. Epson L3210).
+// When collate is true and copies > 1, it outputs [1,2,3... 1,2,3...] and sets copies to 1.
+// When collate is false and copies > 1, it outputs [1,1... 2,2... 3,3...] and sets copies to 1.
+// It also extracts any page ranges ahead of time so the collated bundle has the exact user-selected pages.
+func applyCollationAndCopies(src string, copies int, collate bool, pageRange string, log *log.Logger) (string, int, string) {
+	if copies <= 1 || !strings.EqualFold(filepath.Ext(src), ".pdf") {
+		return src, copies, pageRange
+	}
+
+	gsCmd, err := exec.LookPath("gs")
+	if err != nil {
+		return src, copies, pageRange
+	}
+
+	// 1. If pageRange is specified and not "all", filter the pages first
+	filteredSrc := src
+	cleanedRange := strings.TrimSpace(pageRange)
+	if cleanedRange != "" && !strings.EqualFold(cleanedRange, "all") {
+		pageList := buildGSPageList(src, cleanedRange)
+		if pageList != "" {
+			dstRange := strings.TrimSuffix(src, ".pdf") + ".range.pdf"
+			args := []string{"-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite", "-sPageList=" + pageList, "-sOutputFile=" + dstRange, src}
+			if out, err := exec.Command(gsCmd, args...).CombinedOutput(); err == nil {
+				if fi, err := os.Stat(dstRange); err == nil && fi.Size() > 0 {
+					if log != nil {
+						log.Printf("applyCollationAndCopies: filtered pages (%s) for %s", pageList, filepath.Base(src))
+					}
+					filteredSrc = dstRange
+					cleanedRange = "" // Range is now embedded into the document
+				}
+			} else if log != nil {
+				log.Printf("applyCollationAndCopies: range filter failed (%v): %s", err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+
+	// 2. Count pages in filteredSrc
+	numPages := 1
+	if infoCmd, err := exec.LookPath("pdfinfo"); err == nil {
+		if out, err := exec.Command(infoCmd, filteredSrc).Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "Pages:") {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 {
+						if n, perr := strconv.Atoi(fields[1]); perr == nil && n > 0 {
+							numPages = n
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Perform software collation / multi-copy generation
+	dstCollate := strings.TrimSuffix(src, ".pdf") + ".collated.pdf"
+	var args []string
+	args = append(args, "-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite", "-sOutputFile="+dstCollate)
+
+	if collate {
+		// Collated sets: [1..N], [1..N], ... (copies times)
+		for i := 0; i < copies; i++ {
+			args = append(args, filteredSrc)
+		}
+	} else {
+		// Uncollated sets: 1xCopies, 2xCopies, ..., NxCopies
+		for p := 1; p <= numPages; p++ {
+			for c := 0; c < copies; c++ {
+				args = append(args, fmt.Sprintf("-dFirstPage=%d", p), fmt.Sprintf("-dLastPage=%d", p), filteredSrc)
+			}
+		}
+	}
+
+	cmd := exec.Command(gsCmd, args...)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		if fi, err := os.Stat(dstCollate); err == nil && fi.Size() > 0 {
+			if log != nil {
+				log.Printf("applyCollationAndCopies: successfully expanded %s to %d physical sheets (collate=%v, copies=%d)",
+					filepath.Base(src), numPages*copies, collate, copies)
+			}
+			if filteredSrc != src {
+				_ = os.Remove(filteredSrc)
+			}
+			return dstCollate, 1, cleanedRange
+		}
+	} else if log != nil {
+		log.Printf("applyCollationAndCopies: gs collation failed (%v): %s", err, strings.TrimSpace(string(out)))
+	}
+
+	if filteredSrc != src {
+		_ = os.Remove(filteredSrc)
+	}
+	return src, copies, pageRange
+}
+
+
+// autoFitPDFPages inspects every page's content bounding box in a generated PDF
+// (e.g. from LibreOffice Calc/Writer) and scales & centers pages symmetrically on the sheet,
+// preventing tables from being stuck on the left side with huge blank space on the right.
+func autoFitPDFPages(src string, log *log.Logger) string {
+	pyCmd, err := exec.LookPath("python3")
+	if err != nil {
+		return src
+	}
+	dst := strings.TrimSuffix(src, filepath.Ext(src)) + ".autofit.pdf"
+	pyScript := `import sys, subprocess, os
+
+src = sys.argv[1]
+dst = sys.argv[2]
+
+try:
+    r_info = subprocess.run(['pdfinfo', src], capture_output=True, text=True)
+    numPages = 1
+    isLandscape = True
+
+    for line in r_info.stdout.splitlines():
+        if line.startswith('Pages:'):
+            try:
+                numPages = int(line.split()[1])
+            except Exception:
+                pass
+        elif line.startswith('Page size:'):
+            parts = line.split()
+            if len(parts) >= 5:
+                try:
+                    pw, ph = float(parts[2]), float(parts[4])
+                    isLandscape = pw > ph
+                except Exception:
+                    pass
+
+    sheetW = 842.0 if isLandscape else 595.0
+    sheetH = 595.0 if isLandscape else 842.0
+    margin = 25.0
+    usableW = sheetW - 2.0 * margin
+    usableH = sheetH - 2.0 * margin
+
+    transforms = []
+    any_transformed = False
+
+    for p in range(1, numPages + 1):
+        r_bbox = subprocess.run(['gs', '-q', '-dBATCH', '-dNOPAUSE', f'-dFirstPage={p}', f'-dLastPage={p}', '-sDEVICE=bbox', src], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        bb_line = ''
+        for l in r_bbox.stderr.splitlines():
+            if l.startswith('%%BoundingBox:'):
+                bb_line = l
+                break
+        parts = bb_line.split()
+        if len(parts) >= 5:
+            try:
+                x0, y0, x1, y1 = [float(v) for v in parts[1:5]]
+                w = max(1.0, x1 - x0)
+                h = max(1.0, y1 - y0)
+
+                scaleW = usableW / w
+                scaleH = usableH / h
+                s = min(scaleW, scaleH)
+                s = min(s, 1.5)
+
+                if 0.96 <= s <= 1.04:
+                    s = 1.0
+
+                scaledW = w * s
+                scaledH = h * s
+                targetX = (sheetW - scaledW) / 2.0
+                targetY = (sheetH - scaledH) / 2.0
+                shiftX = targetX - x0 * s
+                shiftY = targetY - y0 * s
+
+                transforms.append(f"[{shiftX:.2f} {shiftY:.2f} {s:.2f}]")
+                if abs(s - 1.0) > 0.04 or abs(shiftX) > 10.0 or abs(shiftY) > 10.0:
+                    any_transformed = True
+            except Exception:
+                transforms.append("[0.0 0.0 1.0]")
+        else:
+            transforms.append("[0.0 0.0 1.0]")
+
+    if not any_transformed:
+        sys.exit(0)
+
+    transforms_ps = "\n  ".join(transforms)
+    ps_code = f"""/transforms [
+  {transforms_ps}
+] def
+<< /BeginPage {{
+  /pg exch def
+  pg transforms length lt {{
+    transforms pg get aload pop
+    /s exch def
+    /ty exch def
+    /tx exch def
+    tx ty translate s s scale
+  }} if
+}} >> setpagedevice
+"""
+
+    cmd = [
+        'gs', '-q', '-dNOPAUSE', '-dBATCH', '-sDEVICE=pdfwrite',
+        f'-dDEVICEWIDTHPOINTS={int(sheetW)}', f'-dDEVICEHEIGHTPOINTS={int(sheetH)}', '-dFIXEDMEDIA',
+        f'-sOutputFile={dst}',
+        '-c', ps_code,
+        '-f', src
+    ]
+
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
+        sys.exit(0)
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+`
+	cmd := exec.Command(pyCmd, "-c", pyScript, src, dst)
+	if err := cmd.Run(); err == nil {
+		if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
+			if log != nil {
+				log.Printf("autoFitPDFPages: scaled & centered pages for %s", filepath.Base(src))
+			}
+			_ = os.Remove(src)
+			_ = os.Rename(dst, src)
+			return src
+		}
+	} else if log != nil {
+		log.Printf("autoFitPDFPages: note: %v", err)
+	}
+	return src
+}
+
 // normalizeDocument converts images (PNG, JPG, JPEG, WEBP, BMP) or raw documents
 // into standard A4 print-ready PDFs, fixes PDF rotation bugs with Ghostscript,
 // and if isGray is true, converts all color spaces into high-contrast DeviceGray.
-func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string, scalePercent int, rotation int) string {
+// marginTop/Right/Bottom/Left (mm) shrink the usable print area for PDFs — see
+// formatPDFForPrint, which is the only path that currently honors them (image
+// jobs are still centered full-bleed via ImageMagick, matching the panel's
+// photo path which never surfaces margin controls in the first place).
+func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string, scalePercent int, rotation int, marginTop, marginRight, marginBottom, marginLeft float64) string {
 	ext := strings.ToLower(filepath.Ext(src))
 	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
 		ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff" ||
 		ext == ".heic" || ext == ".svg"
 	isDoc := ext == ".docx" || ext == ".doc" || ext == ".odt" || ext == ".rtf" ||
 		ext == ".pptx" || ext == ".ppt" || ext == ".xlsx" || ext == ".xls" ||
-		ext == ".ods" || ext == ".odp" || ext == ".html" || ext == ".htm"
+		ext == ".ods" || ext == ".odp" || ext == ".html" || ext == ".htm" || ext == ".csv"
 	isPDF := ext == ".pdf"
 
 	if !isImage && !isDoc && !isPDF {
 		return src
 	}
 
-	// 0) Handling Office documents: Convert to PDF first via LibreOffice headless
+	// 0) Handling Office documents: Convert to PDF first via LibreOffice headless cleanly
 	if isDoc {
+		inputDoc := src
+		if ext == ".xlsx" {
+			inputDoc = prepareSpreadsheetLandscape(src, log)
+		}
 		loCmd := ""
 		if p, err := exec.LookPath("libreoffice"); err == nil {
 			loCmd = p
@@ -2340,21 +2838,25 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 			loCmd = p
 		}
 		if loCmd != "" {
-			outDir := filepath.Dir(src)
-			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", outDir, src)
+			outDir := filepath.Dir(inputDoc)
+			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", outDir, inputDoc)
 			if out, err := cmd.CombinedOutput(); err == nil {
-				convertedPDF := strings.TrimSuffix(src, ext) + ".pdf"
+				convertedPDF := strings.TrimSuffix(inputDoc, filepath.Ext(inputDoc)) + ".pdf"
 				if fi, err := os.Stat(convertedPDF); err == nil && fi.Size() > 0 {
 					if log != nil {
-						log.Printf("normalizeDocument: converted %s → %s via libreoffice", filepath.Base(src), filepath.Base(convertedPDF))
+						log.Printf("normalizeDocument: converted %s → %s via libreoffice", filepath.Base(inputDoc), filepath.Base(convertedPDF))
 					}
-					src = convertedPDF
+					src = pruneBlankPDFPages(convertedPDF, log)
+					src = autoFitPDFPages(src, log)
 					ext = ".pdf"
 					isPDF = true
 				}
 			} else if log != nil {
 				log.Printf("normalizeDocument: libreoffice conversion failed (%v): %s", err, strings.TrimSpace(string(out)))
 			}
+		}
+		if inputDoc != src && strings.HasSuffix(inputDoc, ".land.xlsx") {
+			_ = os.Remove(inputDoc)
 		}
 	}
 
@@ -2437,8 +2939,8 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 	// 2) Handling PDF documents: format geometry, orientation, and scaling
 	// accurately to match the physical printer sheet feed (e.g. 595x842 pt for A4),
 	// respecting user custom scale (e.g. 50%), orientation (Landscape/Portrait),
-	// and rotation without losing vector fidelity.
-	return formatPDFForPrint(src, log, media, orientation, scaling, scalePercent, rotation, isGray)
+	// rotation without losing vector fidelity, and the user's chosen margins.
+	return formatPDFForPrint(src, log, media, orientation, scaling, scalePercent, rotation, isGray, marginTop, marginRight, marginBottom, marginLeft)
 }
 
 func minInt(a, b int) int {
@@ -2471,8 +2973,9 @@ func maxFloat(a, b float64) float64 {
 
 // formatPDFForPrint formats a PDF to match the target physical sheet feed geometry
 // while honoring orientation (Landscape/Portrait), custom scaling (e.g. 50%),
-// rotation, and centering without losing vector quality.
-func formatPDFForPrint(src string, log *log.Logger, media string, orientation string, scaling string, scalePercent int, rotation int, isGray bool) string {
+// rotation, margins (mm, applied as an inset from each edge of the sheet), and
+// centering without losing vector quality.
+func formatPDFForPrint(src string, log *log.Logger, media string, orientation string, scaling string, scalePercent int, rotation int, isGray bool, marginTopMM, marginRightMM, marginBottomMM, marginLeftMM float64) string {
 	if !strings.EqualFold(filepath.Ext(src), ".pdf") {
 		return src
 	}
@@ -2493,7 +2996,18 @@ func formatPDFForPrint(src string, log *log.Logger, media string, orientation st
 	sheetW := minInt(ptW, ptH)
 	sheetH := maxInt(ptW, ptH)
 
+	docW, docH, ok := pageDimensionsPoints(src)
+	if !ok || docW <= 0 || docH <= 0 {
+		docW, docH = sheetW, sheetH
+	}
+
 	isLandscape := strings.EqualFold(strings.TrimSpace(orientation), "landscape")
+	if !isLandscape && !strings.EqualFold(strings.TrimSpace(orientation), "portrait") {
+		// Auto-detect orientation: if document is wider than tall, default to landscape
+		if docW > docH {
+			isLandscape = true
+		}
+	}
 
 	// Canvas dimensions where document is laid out
 	var canvasW, canvasH int
@@ -2505,12 +3019,27 @@ func formatPDFForPrint(src string, log *log.Logger, media string, orientation st
 		canvasH = sheetH
 	}
 
-	docW, docH, ok := pageDimensionsPoints(src)
-	if !ok || docW <= 0 || docH <= 0 {
-		docW, docH = canvasW, canvasH
+	// mm → points (1mm = 72/25.4 pt). Clamp so a pathological margin (e.g. a
+	// stale custom value larger than the sheet) can never invert the usable area.
+	const ptPerMM = 72.0 / 25.4
+	mTop := maxFloat(0, marginTopMM) * ptPerMM
+	mRight := maxFloat(0, marginRightMM) * ptPerMM
+	mBottom := maxFloat(0, marginBottomMM) * ptPerMM
+	mLeft := maxFloat(0, marginLeftMM) * ptPerMM
+	innerW := float64(canvasW) - mLeft - mRight
+	innerH := float64(canvasH) - mTop - mBottom
+	if innerW < 1 {
+		innerW = float64(canvasW)
+		mLeft, mRight = 0, 0
+	}
+	if innerH < 1 {
+		innerH = float64(canvasH)
+		mTop, mBottom = 0, 0
 	}
 
-	// Calculate scale factor
+	// Calculate scale factor. "Actual size" and "Custom %" are explicit user
+	// intent and ignore the margin box entirely (matching how a real print
+	// dialog treats them — margins only constrain the *auto-fit* modes).
 	var s float64
 	if strings.EqualFold(scaling, "custom") || (scalePercent > 0 && scalePercent != 100) {
 		if scalePercent <= 0 {
@@ -2520,22 +3049,26 @@ func formatPDFForPrint(src string, log *log.Logger, media string, orientation st
 	} else if strings.EqualFold(scaling, "actual size") || strings.EqualFold(scaling, "actual") {
 		s = 1.0
 	} else if strings.EqualFold(scaling, "shrink to fit") || strings.EqualFold(scaling, "shrink") {
-		if docW > canvasW || docH > canvasH {
-			s = minFloat(float64(canvasW)/float64(docW), float64(canvasH)/float64(docH))
+		if docW > int(innerW) || docH > int(innerH) {
+			s = minFloat(innerW/float64(docW), innerH/float64(docH))
 		} else {
 			s = 1.0
 		}
+	} else if strings.EqualFold(scaling, "fit width") || strings.EqualFold(scaling, "fitwidth") {
+		s = innerW / float64(docW)
 	} else if discovery.IsFillScaling(scaling, false) {
-		s = maxFloat(float64(canvasW)/float64(docW), float64(canvasH)/float64(docH))
+		s = maxFloat(innerW/float64(docW), innerH/float64(docH))
 	} else {
 		// Default: "fit to page" / "fit"
-		s = minFloat(float64(canvasW)/float64(docW), float64(canvasH)/float64(docH))
+		s = minFloat(innerW/float64(docW), innerH/float64(docH))
 	}
 
 	scaledW := float64(docW) * s
 	scaledH := float64(docH) * s
-	dx := (float64(canvasW) - scaledW) / 2.0
-	dy := (float64(canvasH) - scaledH) / 2.0
+	// Center within the margin-inset box, then offset by the left/bottom
+	// margin (PostScript origin is bottom-left, so "bottom" margin pushes up).
+	dx := mLeft + (innerW-scaledW)/2.0
+	dy := mBottom + (innerH-scaledH)/2.0
 
 	// Build BeginPage PostScript hook
 	var hook strings.Builder
@@ -2964,6 +3497,27 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 			printerName = p.Name
 		}
 	}
+	// Tell cupsd first: mutating only the KroomPrint record left the physical
+	// job running untouched (CUPS kept feeding the printer while the UI showed
+	// "Cancelled"). Best-effort — a job with no CupsJobID yet (still spooling)
+	// or one cupsd has already purged has nothing to cancel.
+	if j.CupsJobID != 0 && printerName != "" {
+		sshMode := discovery.IsSSHURL(s.cfg.CUPSURL)
+		if sshMode {
+			userHost := s.cfg.CUPSSSH
+			if userHost == "" {
+				userHost = discovery.NormalizeSSHHost(s.cfg.CUPSURL)
+			}
+			if _, err := discovery.SSHRunSimple(userHost, fmt.Sprintf("cancel %s", shellQuote(fmt.Sprintf("%s-%d", printerName, j.CupsJobID)))); err != nil && s.log != nil {
+				s.log.Printf("cancel job %s: ssh cancel cups job %d failed: %v", id, j.CupsJobID, err)
+			}
+		} else if s.cfg.CUPSURL != "" {
+			host := discovery.NormalizeHost(s.cfg.CUPSURL)
+			if err := discovery.CancelJobIPP(host, printerName, j.CupsJobID, 5*time.Second); err != nil && s.log != nil {
+				s.log.Printf("cancel job %s: ipp cancel cups job %d failed: %v", id, j.CupsJobID, err)
+			}
+		}
+	}
 	j.Status = "cancelled"
 	j.Progress = 0
 	if err := s.store.UpdateJob(j); err != nil {
@@ -3371,7 +3925,9 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 	if ext == ".pdf" {
 		w.Header().Set("Content-Type", "application/pdf")
 		w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
-		w.Header().Set("Cache-Control", "private, max-age=1800")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		w.WriteHeader(200)
 		_, _ = w.Write(data)
 		return
@@ -3379,26 +3935,31 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 
 	// 2) Check in-process preview cache (avoids repeat LibreOffice invocations)
 	hash := fmt.Sprintf("%x", md5.Sum(data))
-	cacheKey := hash + ext
+	cacheKey := fmt.Sprintf("%s-v8%s", hash, ext)
+	force := r.URL.Query().Get("force") == "true"
 
 	s.previewMu.Lock()
-	if entry, ok := s.previewCache[cacheKey]; ok && time.Now().Before(entry.expires) {
-		cachedPath := entry.path
-		s.previewMu.Unlock()
-		if fi, err := os.Stat(cachedPath); err == nil && fi.Size() > 0 {
-			if s.log != nil {
-				s.log.Printf("preview cache HIT: %s (%s, %d bytes)", header.Filename, cacheKey[:8], fi.Size())
+	if !force {
+		if entry, ok := s.previewCache[cacheKey]; ok && time.Now().Before(entry.expires) {
+			cachedPath := entry.path
+			s.previewMu.Unlock()
+			if fi, err := os.Stat(cachedPath); err == nil && fi.Size() > 0 {
+				if s.log != nil {
+					s.log.Printf("preview cache HIT: %s (%s, %d bytes)", header.Filename, cacheKey[:8], fi.Size())
+				}
+				w.Header().Set("Content-Type", "application/pdf")
+				w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
+				w.Header().Set("X-Cache", "HIT")
+				w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+				w.Header().Set("Pragma", "no-cache")
+				w.Header().Set("Expires", "0")
+				http.ServeFile(w, r, cachedPath)
+				return
 			}
-			w.Header().Set("Content-Type", "application/pdf")
-			w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
-			w.Header().Set("X-Cache", "HIT")
-			w.Header().Set("Cache-Control", "private, max-age=1800")
-			http.ServeFile(w, r, cachedPath)
-			return
+			// Cached file was deleted externally — remove stale entry
+			s.previewMu.Lock()
+			delete(s.previewCache, cacheKey)
 		}
-		// Cached file was deleted externally — remove stale entry
-		s.previewMu.Lock()
-		delete(s.previewCache, cacheKey)
 	}
 	s.previewMu.Unlock()
 
@@ -3424,7 +3985,9 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/pdf")
 			w.Header().Set("Content-Disposition", "inline; filename=preview.pdf")
 			w.Header().Set("X-Cache", "MISS")
-			w.Header().Set("Cache-Control", "private, max-age=1800")
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			http.ServeFile(w, r, cachePath)
 		}
 	}
@@ -3452,6 +4015,10 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 		ext == ".ods" || ext == ".odp" || ext == ".html" || ext == ".htm" ||
 		ext == ".txt" || ext == ".csv"
 	if isDoc {
+		inputDoc := tmpInput
+		if ext == ".xlsx" {
+			inputDoc = prepareSpreadsheetLandscape(tmpInput, s.log)
+		}
 		loCmd := ""
 		if p, err := exec.LookPath("libreoffice"); err == nil {
 			loCmd = p
@@ -3459,14 +4026,22 @@ func (s *Server) handleConvertPreview(w http.ResponseWriter, r *http.Request) {
 			loCmd = p
 		}
 		if loCmd != "" {
-			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", "/tmp", tmpInput)
+			cmd := exec.Command(loCmd, "--headless", "--convert-to", "pdf", "--outdir", "/tmp", inputDoc)
 			if out, err := cmd.CombinedOutput(); err == nil {
-				tmpPDF := strings.TrimSuffix(tmpInput, ext) + ".pdf"
+				tmpPDF := strings.TrimSuffix(inputDoc, filepath.Ext(inputDoc)) + ".pdf"
+				pruneBlankPDFPages(tmpPDF, s.log)
+				autoFitPDFPages(tmpPDF, s.log)
 				serveAndCache(tmpPDF)
+				if inputDoc != tmpInput && strings.HasSuffix(inputDoc, ".land.xlsx") {
+					_ = os.Remove(inputDoc)
+				}
 				return
 			} else if s.log != nil {
 				s.log.Printf("preview libreoffice error: %v (%s)", err, strings.TrimSpace(string(out)))
 			}
+		}
+		if inputDoc != tmpInput && strings.HasSuffix(inputDoc, ".land.xlsx") {
+			_ = os.Remove(inputDoc)
 		}
 	}
 

@@ -129,7 +129,7 @@ func TestFormatPDFForPrint_LandscapeAndScale(t *testing.T) {
 	}
 
 	// Format for Landscape A4 with custom scale 50%
-	formatted := formatPDFForPrint(src, nil, "A4", "Landscape", "Custom", 50, 0, false)
+	formatted := formatPDFForPrint(src, nil, "A4", "Landscape", "Custom", 50, 0, false, 5, 5, 5, 5)
 	defer func() {
 		if formatted != src {
 			_ = os.Remove(formatted)

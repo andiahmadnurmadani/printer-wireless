@@ -30,6 +30,13 @@ export async function loadPdfDocument(source) {
 const pageBitmapCache = new Map()
 
 /**
+ * Clear the PDF page bitmap cache completely to prevent stale rendering
+ */
+export function clearPdfBitmapCache() {
+  pageBitmapCache.clear()
+}
+
+/**
  * Render a single PDF page onto an HTML5 canvas with intelligent memory caching
  * @param {pdfjsLib.PDFDocumentProxy} pdfDoc
  * @param {number} pageNum 1-indexed
@@ -60,11 +67,15 @@ export async function renderPdfPageToCanvas(pdfDoc, pageNum, canvas, targetWidth
   const scale = targetWidth / unscaledViewport.width
   const viewport = page.getViewport({ scale: Math.max(0.5, scale) })
 
-  // Support HiDPI / Retina screens
+  // Support HiDPI / Retina screens with strict aspect-ratio containment
   canvas.width = Math.floor(viewport.width * outputScale)
   canvas.height = Math.floor(viewport.height * outputScale)
-  canvas.style.width = '100%'
-  canvas.style.height = '100%'
+  canvas.style.maxWidth = '100%'
+  canvas.style.maxHeight = '100%'
+  canvas.style.width = 'auto'
+  canvas.style.height = 'auto'
+  canvas.style.objectFit = 'contain'
+  canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`
 
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'

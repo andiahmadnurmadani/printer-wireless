@@ -2,7 +2,13 @@
 // KroomPrint API client — semua data dari backend Go
 // ─────────────────────────────────────────────
 
-const BASE = import.meta.env.VITE_API_URL !== undefined
+import { isNativeApp, getServerUrl } from '../native/server'
+
+// Aplikasi Android (Capacitor) tidak punya origin backend, jadi alamat
+// server diambil dari yang diisi pengguna di layar setup pertama.
+const BASE = isNativeApp()
+  ? getServerUrl()
+  : import.meta.env.VITE_API_URL !== undefined
   ? import.meta.env.VITE_API_URL
   : (typeof window !== 'undefined'
       ? (['localhost', '127.0.0.1'].includes(window.location.hostname) ||
@@ -144,6 +150,26 @@ export const api = {
     return request('/api/jobs', { method: 'POST', body: JSON.stringify(payload) })
   },
   cancelJob: (id) => request(`/api/jobs/${id}/cancel`, { method: 'POST' }),
+  // Scan satu lembar dari flatbed printer USB; balikan PDF gabungan semua halaman sesi.
+  scanFromPrinter: async (body) => {
+    const res = await fetch(`${BASE}/api/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      let msg = `API error ${res.status}`
+      try {
+        msg = (await res.json())?.error || msg
+      } catch {}
+      throw new Error(msg)
+    }
+    return {
+      blob: await res.blob(),
+      sessionId: res.headers.get('X-Scan-Session'),
+      pages: Number(res.headers.get('X-Scan-Pages') || 0),
+    }
+  },
   pauseJob: (id) => request(`/api/jobs/${id}/pause`, { method: 'POST' }),
   resumeJob: (id) => request(`/api/jobs/${id}/resume`, { method: 'POST' }),
   retryJob: (id) => request(`/api/jobs/${id}/retry`, { method: 'POST' }),

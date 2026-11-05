@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -561,6 +562,7 @@ func (s *Server) Handler() http.Handler {
 
 	// ── Discovery ──
 	mux.Handle("POST /api/discovery/scan", adminGate(s.handleScan))
+	mux.Handle("POST /api/scan", staffGate(s.handlePrinterScan))
 	mux.Handle("GET /api/discovery/results", adminGate(s.handleDiscoveryResults))
 	mux.Handle("POST /api/discovery/{id}/add", adminGate(s.handleAddDiscovered))
 	mux.Handle("DELETE /api/discovery/{id}", adminGate(s.handleDeleteDiscovered))
@@ -1358,11 +1360,17 @@ func (s *Server) enrichPrinterHealth(p *store.Printer) {
 		lowInk = p.Toner > 0 && p.Toner < 15
 	}
 
+	// Real CUPS printer-state-reasons (local queue only). The L3210 has no paper
+	// sensor beyond what its driver reports, so these stay false unless CUPS says so.
+	alerts := s.printerAlerts(*p)
+	if msg := alertMessage(alerts); msg != "" {
+		stateText = msg
+	}
 	p.Sensors = store.HardwareSensors{
-		PaperJam:  false,
-		DoorOpen:  false,
-		LowPaper:  p.Paper > 0 && p.Paper < 20,
-		LowInk:    lowInk,
+		PaperJam:  hasAlert(alerts, "media-jam"),
+		DoorOpen:  hasAlert(alerts, "door-open", "cover-open"),
+		LowPaper:  hasAlert(alerts, "media-empty", "media-needed", "media-low"),
+		LowInk:    lowInk || hasAlert(alerts, "marker-supply-low", "marker-supply-empty", "toner-low"),
 		StateText: stateText,
 	}
 }
@@ -1694,7 +1702,6 @@ type createJobReq struct {
 	PPDSettings   map[string]string `json:"ppdSettings,omitempty"`
 	SecureRelease bool   `json:"secureRelease,omitempty"`
 	PIN           string `json:"pin,omitempty"`
-	Cost          int    `json:"cost,omitempty"`
 	User          string `json:"user,omitempty"`
 	Department    string `json:"department,omitempty"`
 	DuplexMode    string `json:"duplexMode,omitempty"`
@@ -1705,6 +1712,11 @@ type createJobReq struct {
 	Margins       *printMargins `json:"margins,omitempty"`
 	PageOrder     string `json:"pageOrder,omitempty"`
 	PrintBorder   bool   `json:"printBorder,omitempty"`
+	// AutoCenter=false aligns the page to the top-left of the margin box; nil (older
+	// clients, retry/reroute) keeps the default centering.
+	AutoCenter *bool `json:"autoCenter,omitempty"`
+	// BookletBinding "right" = right-to-left reading (fold on the right edge).
+	BookletBinding string `json:"bookletBinding,omitempty"`
 }
 
 // printMargins mirrors the frontend's { top, bottom, left, right } shape (mm).
@@ -1789,6 +1801,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "printer is disabled")
 		return
 	}
+	if msg := s.preflightPrinter(p); msg != "" {
+		writeErr(w, 409, msg)
+		return
+	}
 	if req.Copies <= 0 {
 		req.Copies = 1
 	}
@@ -1819,18 +1835,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		req.Duplex = false
 	}
 
-	// Cost & Quota calculation
-	basePrice := 500
-	if req.Color {
-		basePrice = 1500
-	}
-	calcCost := req.Cost
-	if calcCost <= 0 {
-		calcCost = req.Pages * req.Copies * basePrice
-		if req.Duplex {
-			calcCost = int(float64(calcCost) * 0.9) // 10% duplex paper savings discount
-		}
-	}
 	userName := req.User
 	if c, ok := s.claimsFromCtx(r); ok && c.Sub != "" {
 		userName = c.Sub
@@ -1880,7 +1884,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		PrinterID:     p.ID,
 		PIN:           req.PIN,
 		SecureRelease: req.SecureRelease,
-		Cost:          calcCost,
 		User:          userName,
 		Department:    deptName,
 	})
@@ -1955,6 +1958,7 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 		ScalePercent: req.ScalePercent,
 		PageOrder:    req.PageOrder,
 		PrintBorder:  req.PrintBorder,
+		ReverseOrder: req.ReverseOrder,
 	}
 	if req.Duplex {
 		if strings.EqualFold(req.DuplexMode, "short") || strings.EqualFold(req.DuplexMode, "two-sided-short-edge") {
@@ -1974,7 +1978,8 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 
 	marginTop, marginRight, marginBottom, marginLeft := resolvePrintMarginsMM(req.MarginPreset, req.Margins)
 
-	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling, req.ScalePercent, req.Rotation, marginTop, marginRight, marginBottom, marginLeft)
+	center := req.AutoCenter == nil || *req.AutoCenter
+	filePath = normalizeDocument(filePath, s.log, normHost, isGray, req.PaperSize, req.Orientation, req.Scaling, req.ScalePercent, req.Rotation, marginTop, marginRight, marginBottom, marginLeft, center)
 	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" {
 		opts.FileType = "application/pdf"
 		// Both rasterized images and PDFs are now formatted and oriented by normalizeDocument
@@ -1994,6 +1999,11 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	if strings.TrimSpace(opts.Watermark) != "" {
 		filePath = applyWatermark(filePath, opts.Watermark, opts.WatermarkLayout, opts.WatermarkOpacity, s.log)
 	}
+	// pdftopdf only imposes left-bound booklets; feeding it the pages in reverse
+	// yields the right-bound order (verified: 8 pages -> [1|8] [7|2] [3|6] [5|4]).
+	if opts.Booklet && strings.EqualFold(req.BookletBinding, "right") {
+		filePath = reversePDFPages(filePath, s.log)
+	}
 
 	// Multi-copy & Collation expansion:
 	// Desktop inkjet printers (Epson L3210/L3250) lack hardware collators and PPD *cupsCollate support.
@@ -2001,7 +2011,9 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 	// - opts.Collate=true  -> Bundles in sequence: 1,2,3... 1,2,3...
 	// - opts.Collate=false -> Grouped pages: 1,1... 2,2... 3,3...
 	// Setting opts.Copies=1 ensures CUPS streams the pre-collated sheets directly without driver failure.
-	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" && opts.Copies > 1 {
+	// Skipped for N-Up/booklet: expanding pages first would impose every copy into ONE
+	// booklet/grid; pdftopdf repeats the imposed sheets per copy correctly on its own.
+	if strings.ToLower(filepath.Ext(filePath)) == ".pdf" && opts.Copies > 1 && opts.NUp <= 1 && !opts.Booklet {
 		colPDF, newCopies, newRange := applyCollationAndCopies(filePath, opts.Copies, opts.Collate, opts.PageRange, s.log)
 		if colPDF != filePath {
 			filePath = colPDF
@@ -2101,6 +2113,9 @@ func (s *Server) dispatchPrintJob(jobID string, filePath string, req createJobRe
 				}
 				if opts.Booklet {
 					flags = append(flags, "-o", "booklet=true")
+				}
+				if opts.ReverseOrder && !opts.ManualDuplex {
+					flags = append(flags, "-o", "outputorder=reverse")
 				}
 				if slot := discovery.NormalizeInputSlotPPD(opts.InputTray); slot != "" {
 					flags = append(flags, "-o", "InputSlot="+slot)
@@ -2811,7 +2826,7 @@ except Exception:
 // formatPDFForPrint, which is the only path that currently honors them (image
 // jobs are still centered full-bleed via ImageMagick, matching the panel's
 // photo path which never surfaces margin controls in the first place).
-func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string, scalePercent int, rotation int, marginTop, marginRight, marginBottom, marginLeft float64) string {
+func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool, media string, orientation string, scaling string, scalePercent int, rotation int, marginTop, marginRight, marginBottom, marginLeft float64, center bool) string {
 	ext := strings.ToLower(filepath.Ext(src))
 	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" ||
 		ext == ".bmp" || ext == ".gif" || ext == ".tif" || ext == ".tiff" ||
@@ -2940,7 +2955,7 @@ func normalizeDocument(src string, log *log.Logger, userHost string, isGray bool
 	// accurately to match the physical printer sheet feed (e.g. 595x842 pt for A4),
 	// respecting user custom scale (e.g. 50%), orientation (Landscape/Portrait),
 	// rotation without losing vector fidelity, and the user's chosen margins.
-	return formatPDFForPrint(src, log, media, orientation, scaling, scalePercent, rotation, isGray, marginTop, marginRight, marginBottom, marginLeft)
+	return formatPDFForPrint(src, log, media, orientation, scaling, scalePercent, rotation, isGray, marginTop, marginRight, marginBottom, marginLeft, center)
 }
 
 func minInt(a, b int) int {
@@ -2975,7 +2990,7 @@ func maxFloat(a, b float64) float64 {
 // while honoring orientation (Landscape/Portrait), custom scaling (e.g. 50%),
 // rotation, margins (mm, applied as an inset from each edge of the sheet), and
 // centering without losing vector quality.
-func formatPDFForPrint(src string, log *log.Logger, media string, orientation string, scaling string, scalePercent int, rotation int, isGray bool, marginTopMM, marginRightMM, marginBottomMM, marginLeftMM float64) string {
+func formatPDFForPrint(src string, log *log.Logger, media string, orientation string, scaling string, scalePercent int, rotation int, isGray bool, marginTopMM, marginRightMM, marginBottomMM, marginLeftMM float64, center bool) string {
 	if !strings.EqualFold(filepath.Ext(src), ".pdf") {
 		return src
 	}
@@ -3069,6 +3084,11 @@ func formatPDFForPrint(src string, log *log.Logger, media string, orientation st
 	// margin (PostScript origin is bottom-left, so "bottom" margin pushes up).
 	dx := mLeft + (innerW-scaledW)/2.0
 	dy := mBottom + (innerH-scaledH)/2.0
+	if !center {
+		// Top-left of the margin box (PostScript origin is bottom-left).
+		dx = mLeft
+		dy = float64(canvasH) - mTop - scaledH
+	}
 
 	// Build BeginPage PostScript hook
 	var hook strings.Builder
@@ -4133,7 +4153,6 @@ func (s *Server) handleReleaseSecureJob(w http.ResponseWriter, r *http.Request) 
 		PageRange:   j.PageRange,
 		Priority:    j.Priority,
 		PrinterID:   j.PrinterID,
-		Cost:        j.Cost,
 		User:        j.User,
 		Department:  j.Department,
 	}
@@ -4191,7 +4210,6 @@ func (s *Server) handleRerouteJob(w http.ResponseWriter, r *http.Request) {
 		PageRange:   j.PageRange,
 		Priority:    j.Priority,
 		PrinterID:   newPrinter.ID,
-		Cost:        j.Cost,
 		User:        j.User,
 		Department:  j.Department,
 	}
@@ -4221,18 +4239,17 @@ func (s *Server) handlePurgeJob(w http.ResponseWriter, r *http.Request) {
 
 // ── Domain 5: Security, Accounting & Analytics Handlers ──
 
-// handleAnalyticsSummary returns global usage summary, cost breakdown and department quotas.
+// handleAnalyticsSummary returns global usage summary and pages per department.
+// Internal use only: no cost or quota (KroomPrint is not a billing system).
 func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
 	hist, _ := s.store.ListHistory(1000, "")
 	totalJobs := len(hist)
 	totalPages := 0
-	totalCost := 0
 	deptPages := make(map[string]int)
 
 	for _, h := range hist {
 		pages := h.Pages * h.Copies
 		totalPages += pages
-		totalCost += h.Cost
 		dept := h.Department
 		if dept == "" {
 			dept = "Engineering"
@@ -4240,20 +4257,10 @@ func (s *Server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) 
 		deptPages[dept] += pages
 	}
 
-	monthlyQuota := 500
-	quotaUsed := totalPages % monthlyQuota
-	if quotaUsed == 0 && totalPages > 0 {
-		quotaUsed = monthlyQuota
-	}
-
 	writeJSON(w, 200, map[string]any{
 		"totalJobs":      totalJobs,
 		"totalPages":     totalPages,
-		"totalCost":      totalCost,
-		"monthlyQuota":   monthlyQuota,
-		"quotaUsed":      quotaUsed,
-		"quotaRemaining": monthlyQuota - quotaUsed,
-		"departments":    deptPages,
+		"departments": deptPages,
 	})
 }
 
@@ -4271,12 +4278,12 @@ func (s *Server) handleAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="kroomprint-audit-log.csv"`)
 		w.WriteHeader(200)
 
-		fmt.Fprintln(w, "ID,Job Name,File Type,Pages,Copies,Total Pages,Printer Name,Status,Cost (IDR),User,Department,Created At,Duration,Error")
+		fmt.Fprintln(w, "ID,Job Name,File Type,Pages,Copies,Total Pages,Printer Name,Status,User,Department,Created At,Duration,Error")
 		for _, h := range hist {
 			totPages := h.Pages * h.Copies
 			dateStr := time.UnixMilli(h.CreatedAt).Format(time.RFC3339)
-			fmt.Fprintf(w, "%q,%q,%q,%d,%d,%d,%q,%q,%d,%q,%q,%q,%q,%q\n",
-				h.ID, h.Name, h.FileType, h.Pages, h.Copies, totPages, h.PrinterName, h.Status, h.Cost, h.User, h.Department, dateStr, h.Duration, h.Error,
+			fmt.Fprintf(w, "%q,%q,%q,%d,%d,%d,%q,%q,%q,%q,%q,%q,%q\n",
+				h.ID, h.Name, h.FileType, h.Pages, h.Copies, totPages, h.PrinterName, h.Status, h.User, h.Department, dateStr, h.Duration, h.Error,
 			)
 		}
 		return
@@ -4286,4 +4293,36 @@ func (s *Server) handleAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 		"records": hist,
 		"total":   len(hist),
 	})
+}
+
+// reversePDFPages returns a copy of src with its pages in reverse order, or src
+// unchanged when poppler's pdfseparate/pdfunite are unavailable or fail.
+func reversePDFPages(src string, log *log.Logger) string {
+	if !strings.EqualFold(filepath.Ext(src), ".pdf") {
+		return src
+	}
+	dir, err := os.MkdirTemp("", "kp-rev-")
+	if err != nil {
+		return src
+	}
+	defer os.RemoveAll(dir)
+	if out, err := exec.Command("pdfseparate", src, filepath.Join(dir, "%06d.pdf")).CombinedOutput(); err != nil {
+		if log != nil {
+			log.Printf("reversePDFPages: pdfseparate failed (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+		return src
+	}
+	pages, _ := filepath.Glob(filepath.Join(dir, "*.pdf"))
+	sort.Sort(sort.Reverse(sort.StringSlice(pages)))
+	dst := strings.TrimSuffix(src, ".pdf") + ".rev.pdf"
+	if len(pages) < 2 {
+		return src
+	}
+	if out, err := exec.Command("pdfunite", append(pages, dst)...).CombinedOutput(); err != nil {
+		if log != nil {
+			log.Printf("reversePDFPages: pdfunite failed (%v): %s", err, strings.TrimSpace(string(out)))
+		}
+		return src
+	}
+	return dst
 }

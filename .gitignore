@@ -49,3 +49,6 @@ kroomprint-backend
 # Synology NAS
 @eaDir/
 @eaDir
+
+# APK hasil build (disajikan server.cjs dari downloads/)
+downloads/*.apk

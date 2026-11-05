@@ -97,6 +97,7 @@ export function AppProvider({ children }) {
   }, [settings.darkMode])
 
   // ── Real-Time SSE Event Streaming (Domain 4) ──
+  const notifiedFailRef = useRef(new Set()) // one "gagal" notification per job
   useEffect(() => {
     const unsub = api.subscribeEvents((event) => {
       if (!event) return
@@ -119,6 +120,17 @@ export function AppProvider({ children }) {
             return [j, ...list.filter((x) => !x._optimistic && x.id !== j.id)]
           })
           // Native browser notification
+          // Failures arrive as job_updated with a terminal status (no job_completed).
+          if (event.type === 'job_updated' && j.status === 'failed' && settings.notifications && !notifiedFailRef.current.has(j.id)) {
+            notifiedFailRef.current.add(j.id)
+            if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+              try {
+                new Notification('KroomPrint · Cetak Gagal', {
+                  body: `"${j.name || 'Print Job'}": ${j.error || 'printer bermasalah'}`,
+                })
+              } catch {}
+            }
+          }
           if (event.type === 'job_completed' && settings.notifications) {
             if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
               try {

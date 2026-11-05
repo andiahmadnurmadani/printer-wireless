@@ -59,6 +59,8 @@ type JobOptions struct {
 	// PrintBorder draws a hairline border around each imposed page when
 	// NUp > 1, matching the panel's "Cetak Batas Halaman" checkbox.
 	PrintBorder bool
+	// ReverseOrder prints the last page first (pdftopdf outputorder=reverse).
+	ReverseOrder bool
 }
 
 // NormalizeHost strips scheme/path from a CUPS URL -> "host:port".
@@ -346,6 +348,9 @@ func buildJobAttrs(opts JobOptions) []jobAttr {
 	if opts.Booklet {
 		attrs = append(attrs, jobKeyword("booklet", "true"), jobKeyword("Booklet", "True"))
 	}
+	if opts.ReverseOrder && !opts.ManualDuplex {
+		attrs = append(attrs, jobKeyword("outputorder", "reverse"))
+	}
 	if slot := NormalizeInputSlotPPD(opts.InputTray); slot != "" {
 		attrs = append(attrs, jobKeyword("InputSlot", slot))
 	} else if slot := NormalizeInputSlotPPD(opts.PPDSettings["InputSlot"]); slot != "" {
@@ -527,7 +532,7 @@ func reservedJobOption(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "pagesize", "mediatype", "ink", "inputslot", "media", "sides", "collate",
 		"booklet", "print-quality", "orientation-requested", "print-scaling",
-		"fitplot", "number-up", "number-up-layout", "page-border", "page-set", "copies",
+		"fitplot", "number-up", "number-up-layout", "page-border", "page-set", "copies", "outputorder",
 		"multiple-document-handling", "page-ranges", "job-name",
 		"requesting-user-name", "document-format", "printer-uri":
 		return true

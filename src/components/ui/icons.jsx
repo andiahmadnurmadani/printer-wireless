@@ -488,3 +488,30 @@ export const IconTable = ({ size = 18, className = '' }) => (
 
 
 
+
+export const IconAndroid = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M4 10v6" />
+    <path d="M20 10v6" />
+    <path d="M7 9h10v8a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V9a5 5 0 0 1 10 0" />
+    <path d="M8 3l1 2" />
+    <path d="M16 3l-1 2" />
+    <path d="M9 18v3" />
+    <path d="M15 18v3" />
+  </svg>
+)
+
+export const IconApple = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M8.286 7.008c-3.216 0-4.286 3.23-4.286 5.92C4 16.157 6.143 21 8.286 21c1.165-.05 1.799-.538 3.214-.538 1.406 0 1.607.538 3.214.538S19 17.771 19 15.619c-.03-.011-2.649-.434-2.679-3.23-.02-2.335 2.589-3.179 2.679-3.228-1.096-1.606-2.926-1.996-3.214-2.032-.75-.11-2.143.538-3.214.538-1.071 0-2.143-.538-3.214-.538z" />
+    <path d="M12 4a2 2 0 0 0 2-2" />
+  </svg>
+)
+
+export const IconShare = ({ size = 18, className = '' }) => (
+  <svg width={size} height={size} {...base} className={className} aria-hidden="true">
+    <path d="M8 9H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1" />
+    <path d="M12 14V3" />
+    <path d="M9 6l3-3 3 3" />
+  </svg>
+)

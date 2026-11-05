@@ -18,6 +18,7 @@ import PrintSheetPreview from '../preview/PrintSheetPreview'
 import PageThumbnails, { clearThumbCache } from '../preview/PageThumbnails'
 import FinalPrintModal from '../preview/FinalPrintModal'
 import CameraScanModal from '../scanner/CameraScanModal'
+import PrinterScanModal from '../scanner/PrinterScanModal'
 import ImageLayoutControls from '../preview/ImageLayoutControls'
 import DocumentLayoutControls, { DEFAULT_DOC_CONFIG } from '../preview/DocumentLayoutControls'
 import ExcelLayoutControls, { DEFAULT_EXCEL_CONFIG } from '../preview/ExcelLayoutControls'
@@ -119,6 +120,7 @@ export default function PrintPage({ onNavigate }) {
   const [loadingPdf, setLoadingPdf] = useState(false)
   const [finalModalOpen, setFinalModalOpen] = useState(false)
   const [cameraModalOpen, setCameraModalOpen] = useState(false)
+  const [printerScanOpen, setPrinterScanOpen] = useState(false)
   const [imgConfig, setImgConfig] = useState(DEFAULT_IMAGE_CONFIG)
   const [docConfig, setDocConfig] = useState(DEFAULT_DOC_CONFIG)
   const [excelConfig, setExcelConfig] = useState(DEFAULT_EXCEL_CONFIG)
@@ -499,8 +501,18 @@ export default function PrintPage({ onNavigate }) {
   }, [effectivePaper, effectiveOrient])
 
   // Handles orientation switching without resetting user fit choice
+  // 'auto' re-derives the orientation from the document's first page (the same
+  // rule used when the file is loaded), so "Otomatis" is not a dead button.
   const handleOrientationChange = (nextOrient) => {
-    setOrientation(nextOrient)
+    if (nextOrient !== 'auto') {
+      setOrientation(nextOrient)
+      return
+    }
+    if (!pdfDoc) return
+    pdfDoc.getPage(1).then((page) => {
+      const vp = page.getViewport({ scale: 1 })
+      setOrientation(vp.width > vp.height ? 'Landscape' : 'Portrait')
+    }).catch(() => {})
   }
 
   // Synchronized image layout updater
@@ -619,6 +631,8 @@ export default function PrintPage({ onNavigate }) {
         margins: docIsPaged ? activeDocConfig.margins : undefined,
         pageOrder: docIsPaged ? activeDocConfig.pageOrder : undefined,
         printBorder: docIsPaged ? !!activeDocConfig.printBorder : false,
+        autoCenter: docIsPaged ? activeDocConfig.autoCenter !== false : true,
+        bookletBinding: docIsPaged ? activeDocConfig.bookletBinding : undefined,
       }
       let oddFile = file
       if (convertedPdfBlob && isOfficeDoc(file.name)) {
@@ -708,6 +722,8 @@ export default function PrintPage({ onNavigate }) {
       margins: docIsPaged ? activeDocConfig.margins : undefined,
       pageOrder: docIsPaged ? activeDocConfig.pageOrder : undefined,
       printBorder: docIsPaged ? !!activeDocConfig.printBorder : false,
+      autoCenter: docIsPaged ? activeDocConfig.autoCenter !== false : true,
+      bookletBinding: docIsPaged ? activeDocConfig.bookletBinding : undefined,
     }
 
     // Optimistic reset + navigate BEFORE the network call — feels instant
@@ -771,6 +787,8 @@ export default function PrintPage({ onNavigate }) {
       margins: docIsPaged ? activeDocConfig.margins : undefined,
       pageOrder: docIsPaged ? activeDocConfig.pageOrder : undefined,
       printBorder: docIsPaged ? !!activeDocConfig.printBorder : false,
+      autoCenter: docIsPaged ? activeDocConfig.autoCenter !== false : true,
+      bookletBinding: docIsPaged ? activeDocConfig.bookletBinding : undefined,
     }
     submitJob(evenPayload, file)
       .then(() => {
@@ -882,6 +900,20 @@ export default function PrintPage({ onNavigate }) {
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
                 >
                   <IconCamera size={18} /> Scan Document with Camera
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (!isAuthenticated) {
+                      openLoginModal('Please sign in to scan and print documents.')
+                      return
+                    }
+                    setPrinterScanOpen(true)
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
+                >
+                  <IconPrinter size={18} /> Scan dari printer
                 </button>
               </div>
             </div>
@@ -1103,7 +1135,7 @@ export default function PrintPage({ onNavigate }) {
                 { id: 'basic', label: 'Basic' },
                 { id: 'media', label: 'Paper & Tray' },
                 { id: 'watermark', label: 'Watermark' },
-                { id: 'security', label: 'Security & Quota' },
+                { id: 'security', label: 'Keamanan & Departemen' },
               ].map((t) => (
                 <button
                   key={t.id}
@@ -1589,11 +1621,11 @@ export default function PrintPage({ onNavigate }) {
                 )}
 
                 <Select
-                  label="Billing Department"
+                  label="Departemen"
                   value={department}
                   onChange={setDepartment}
                   options={['Engineering', 'Product & Design', 'Finance & Admin', 'Operations', 'Executive']}
-                  hint="Alokasi kuota dan biaya cetak per departemen"
+                  hint="Untuk pencatatan pemakaian per departemen (internal)"
                 />
 
                 <div className="p-3 bg-vanilla-100 border border-dark-black-900/20 rounded-[12px] flex items-center justify-between text-[12.5px] font-figtree">
@@ -1807,6 +1839,16 @@ export default function PrintPage({ onNavigate }) {
           )}
         </div>
       </Modal>
+
+      <PrinterScanModal
+        open={printerScanOpen}
+        onClose={() => setPrinterScanOpen(false)}
+        printer={selectedPrinter}
+        onScanComplete={(scannedFile) => {
+          setFile(scannedFile)
+          toast('Hasil scan printer dimuat ke Print Studio', 'ok')
+        }}
+      />
 
       {/* ── Mobile & Camera Document Scanner Modal (Domain 6) ── */}
       <CameraScanModal

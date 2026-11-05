@@ -637,6 +637,7 @@ export default function DocumentLayoutControls({
                 onClick={() => {
                   if (item.id === 'auto') {
                     update({ orientationMode: 'auto' })
+                    if (onChangeOrientation) onChangeOrientation('auto')
                   } else {
                     update({ orientationMode: item.id.toLowerCase() })
                     if (onChangeOrientation) onChangeOrientation(item.id)

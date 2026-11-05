@@ -772,7 +772,9 @@ export default function PrintSheetPreview({
                   padding: docPadding,
                   transition: 'transform 0.15s ease-out, padding 0.15s ease-out',
                 }}
-                className="w-full h-full flex items-center justify-center overflow-hidden"
+                className={`w-full h-full flex overflow-hidden ${
+                  docConfig?.autoCenter === false ? 'items-start justify-start' : 'items-center justify-center'
+                }`}
               >
                 {nUp > 1 ? (
                   /* N-Up Multi-Page Grid Simulation */

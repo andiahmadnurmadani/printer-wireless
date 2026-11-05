@@ -1,0 +1,12 @@
+{
+  "appId": "com.kroombox.kroomprint",
+  "appName": "KroomPrint",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

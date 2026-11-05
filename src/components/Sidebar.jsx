@@ -1,5 +1,6 @@
 import { useApp } from '../context/AppContext'
 import { useAuth } from '../context/AuthContext'
+import { isNativeApp, getServerUrl, clearServerUrl } from '../native/server'
 
 /**
  * Sidebar navigation with the Bugster design language, filtered by role.
@@ -139,6 +140,18 @@ export default function Sidebar({ current, onNavigate, collapsed = false, isMobi
           >
             <RoleIcon size={14} />
             {collapsed && !isMobile ? 'Login' : 'Sign in'}
+          </button>
+        )}
+        {isNativeApp() && (
+          <button
+            onClick={() => {
+              clearServerUrl()
+              window.location.reload()
+            }}
+            title={getServerUrl()}
+            className="rounded-[12px] border border-dark-black-900/30 bg-transparent hover:bg-dark-black-900/5 font-geist text-[11px] text-dark-black-900/70 cursor-pointer py-1.5 text-center truncate px-2"
+          >
+            Ganti server · {getServerUrl().replace(/^https?:\/\//, '')}
           </button>
         )}
       </div>

@@ -1,0 +1,14 @@
+{
+  "android": {
+    "version": "1.0.0",
+    "file": "/downloads/kroomprint-1.0.0.apk",
+    "size": 5419691,
+    "minAndroid": "7.0",
+    "signed": false,
+    "updatedAt": "2026-11-04T09:28:16.480Z"
+  },
+  "ios": {
+    "appStoreUrl": "",
+    "testflightUrl": ""
+  }
+}

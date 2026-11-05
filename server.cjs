@@ -8,6 +8,9 @@ const BACKEND_PORT = parseInt(process.env.BACKEND_PORT || '8088', 10);
 // dist/ is built by amba (Node v20 via nvm) directly on the NAS mount, so amba owns the files.
 // If you see 404, run: npm run build  (on amba, with Node 20 in PATH)
 const DIST_DIR = process.env.DIST_DIR || '/mnt/web/Nouvem/printer-wireless/dist';
+// APK dan latest.json hasil `npm run apk`. Sengaja di luar dist/ supaya APK tidak ikut
+// terbungkus ke dalam aplikasi Android saat `cap sync`.
+const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(__dirname, 'downloads');
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -23,7 +26,9 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf'
+  '.ttf': 'font/ttf',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.apk': 'application/vnd.android.package-archive'
 };
 
 const server = http.createServer((req, res) => {
@@ -64,6 +69,27 @@ const server = http.createServer((req, res) => {
     });
 
     req.pipe(proxyReq);
+    return;
+  }
+
+  if (reqPath.startsWith('/downloads/')) {
+    const dlPath = path.join(DOWNLOADS_DIR, path.basename(reqPath));
+    fs.stat(dlPath, (err, st) => {
+      if (err || !st.isFile()) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('404 Not Found: ' + reqPath);
+        return;
+      }
+      const ext = path.extname(dlPath).toLowerCase();
+      const headers = {
+        'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+        'Content-Length': st.size,
+        'Cache-Control': 'no-cache',
+      };
+      if (ext === '.apk') headers['Content-Disposition'] = 'attachment; filename="' + path.basename(dlPath) + '"';
+      res.writeHead(200, headers);
+      fs.createReadStream(dlPath).pipe(res);
+    });
     return;
   }
 
@@ -109,7 +135,7 @@ const server = http.createServer((req, res) => {
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
       const headers = { 'Content-Type': contentType };
 
-      if (ext === '.html') {
+      if (ext === '.html' || reqPath === '/sw.js' || ext === '.webmanifest') {
         headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
       } else if (reqPath.startsWith('/assets/')) {
         headers['Cache-Control'] = 'public, max-age=31536000, immutable';

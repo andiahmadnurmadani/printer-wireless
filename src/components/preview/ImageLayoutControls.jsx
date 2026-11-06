@@ -226,7 +226,7 @@ export default function ImageLayoutControls({
 
         <div className="grid grid-cols-12 gap-3 items-center">
           {/* 3x3 Alignment Anchor Grid */}
-          <div className="col-span-5 bg-white border-2 border-dark-black-900 rounded-[10px] p-1.5 grid grid-cols-3 gap-1 shadow-xs">
+          <div className="col-span-12 sm:col-span-5 bg-white border-2 border-dark-black-900 rounded-[10px] p-1.5 grid grid-cols-3 gap-1 shadow-xs">
             {ALIGNMENT_GRID.map((pos) => {
               const active = config.alignment === pos.id
               return (
@@ -237,7 +237,8 @@ export default function ImageLayoutControls({
                     const patch = { alignment: pos.id, offsetX: 0, offsetY: 0 }
                     if (config.fitMode === 'cover') {
                       patch.cropPositionX = pos.xAlign === 'left' ? 0 : pos.xAlign === 'right' ? 100 : 50
-                      patch.cropPositionY = pos.yAlign === 'top' ? 0 : pos.yAlign === 'bottom' ? 100 : 50
+                      patch.cropPositionY = pos.yAlign === 'top' ? 0 : pos.yAlign === 'bottom' ? 50 : 50
+                      if (pos.yAlign === 'bottom') patch.cropPositionY = 100
                     }
                     update(patch)
                   }}
@@ -255,7 +256,7 @@ export default function ImageLayoutControls({
           </div>
 
           {/* Fine Tuning Offsets */}
-          <div className="col-span-7 flex flex-col gap-1.5">
+          <div className="col-span-12 sm:col-span-7 flex flex-col gap-1.5">
             <div className="grid grid-cols-2 gap-2">
               <label className="flex flex-col">
                 <span className="font-geist text-[10px] text-dark-black-900/70 font-semibold">
@@ -312,7 +313,7 @@ export default function ImageLayoutControls({
       </div>
 
       {/* 3. Fit Mode & Rotation Row */}
-      <div className="grid grid-cols-2 gap-3 border-t border-dark-black-900/10 pt-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-dark-black-900/10 pt-3">
         {/* Fit Mode */}
         <div className="flex flex-col gap-1">
           <span className="font-figtree text-[11.5px] font-bold text-dark-black-900">

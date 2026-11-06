@@ -34,11 +34,11 @@ export default function TopBar({ onNavigate, onLogout, onMenu, user }) {
   }, [q, printers, jobs])
 
   return (
-    <header className="relative z-40 h-[72px] shrink-0 flex items-center gap-4 px-5 border-b-2 border-dark-black-900 bg-vanilla-200">
+    <header className="relative z-40 h-[64px] sm:h-[72px] shrink-0 flex items-center gap-2.5 sm:gap-4 px-3 sm:px-5 border-b-2 border-dark-black-900 bg-vanilla-200">
       {/* Mobile menu button */}
       <button
         onClick={onMenu}
-        className="lg:hidden w-10 h-10 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 flex flex-col items-center justify-center gap-[3px] cursor-pointer"
+        className="lg:hidden w-10 h-10 shrink-0 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-100 flex flex-col items-center justify-center gap-[3px] cursor-pointer"
         aria-label="Menu"
       >
         <span className="w-4 h-[2px] bg-dark-black-900" />
@@ -47,14 +47,14 @@ export default function TopBar({ onNavigate, onLogout, onMenu, user }) {
       </button>
 
       {/* Search */}
-      <div className="relative flex-1 max-w-xl">
-        <IconSearch size={17} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-dark-black-900/50 pointer-events-none" />
+      <div className="relative flex-1 min-w-0 max-w-xl">
+        <IconSearch size={16} className="absolute left-3 sm:left-3.5 top-1/2 -translate-y-1/2 text-dark-black-900/50 pointer-events-none" />
         <input
           type="text"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search printers and jobs…"
-          className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[12px] pl-10 pr-4 py-2.5 font-figtree text-[14px] focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
+          className="w-full border-2 border-dark-black-900 bg-vanilla-100 rounded-[12px] pl-9 sm:pl-10 pr-3 sm:pr-4 py-2 sm:py-2.5 font-figtree text-[13px] sm:text-[14px] focus:outline-none focus:bg-lime-300/30 transition-colors placeholder:text-dark-black-900/30"
         />
         {results.length > 0 && (
           <div className="absolute top-full left-0 right-0 mt-2 bg-vanilla-100 border-2 border-dark-black-900 rounded-[14px] shadow-xl overflow-hidden z-50">
@@ -80,7 +80,7 @@ export default function TopBar({ onNavigate, onLogout, onMenu, user }) {
         )}
       </div>
 
-      <div className="flex-1" />
+      <div className="hidden sm:block flex-1" />
 
       {/* Status pills */}
       <div className="hidden md:flex items-center gap-2">

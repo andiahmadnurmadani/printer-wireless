@@ -124,27 +124,31 @@ export default function FinalPrintModal({
     }
   }, [paperDim, modalPaperWidth])
 
-  // Precise Document margin padding in preview pixels matching physical millimeters
+  // Precise Document margin padding in percentage of sheet width (CSS % padding is relative to width on all 4 sides)
   const docPadding = useMemo(() => {
     if (isImage) return '0px'
-    const pxPerMm = modalPaperWidth / (paperDim.widthMm || 210)
+    const wMm = paperDim.widthMm || 210
+    const pct = (mm) => `${((mm / wMm) * 100).toFixed(3)}%`
     switch (docConfig?.marginPreset) {
       case 'none':
         return '0px'
       case 'narrow':
       case 'minimum':
-        return `${Math.round(3 * pxPerMm)}px`
+        return pct(3)
       case 'default':
-        return `${Math.round(5 * pxPerMm)}px`
+        return pct(5)
       case 'custom':
         if (docConfig?.margins) {
-          return `${Math.round((docConfig.margins.top || 0) * pxPerMm)}px ${Math.round((docConfig.margins.right || 0) * pxPerMm)}px ${Math.round((docConfig.margins.bottom || 0) * pxPerMm)}px ${Math.round((docConfig.margins.left || 0) * pxPerMm)}px`
+          return `${pct(docConfig.margins.top || 0)} ${pct(docConfig.margins.right || 0)} ${pct(docConfig.margins.bottom || 0)} ${pct(docConfig.margins.left || 0)}`
         }
-        return `${Math.round(5 * pxPerMm)}px`
+        return pct(5)
       default:
-        return `${Math.round(5 * pxPerMm)}px`
+        return pct(5)
     }
-  }, [isImage, modalPaperWidth, paperDim.widthMm, docConfig?.marginPreset, docConfig?.margins])
+  }, [isImage, paperDim.widthMm, docConfig?.marginPreset, docConfig?.margins])
+
+  const safeInsetXPct = (((paperDim.printableMarginMm || 5) / (paperDim.widthMm || 210)) * 100).toFixed(3)
+  const safeInsetYPct = (((paperDim.printableMarginMm || 5) / (paperDim.heightMm || 297)) * 100).toFixed(3)
 
   // Visual scaling transform matching DocumentLayoutControls
   const docTransform = useMemo(() => {
@@ -251,33 +255,33 @@ export default function FinalPrintModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-dark-black-900/70 backdrop-blur-sm overflow-y-auto">
-      <div className="relative w-full max-w-6xl max-h-[92vh] bg-vanilla-200 border-2 border-dark-black-900 rounded-[24px] shadow-[10px_10px_0px_0px_rgba(56,56,56,1)] flex flex-col overflow-hidden modal-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-6 bg-dark-black-900/70 backdrop-blur-sm overflow-y-auto">
+      <div className="relative w-full max-w-6xl max-h-[95vh] sm:max-h-[92vh] bg-vanilla-200 border-2 border-dark-black-900 rounded-[18px] sm:rounded-[24px] shadow-[6px_6px_0px_0px_rgba(56,56,56,1)] sm:shadow-[10px_10px_0px_0px_rgba(56,56,56,1)] flex flex-col overflow-hidden modal-in">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b-2 border-dark-black-900 bg-vanilla-100 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900">
-              <IconEye size={20} />
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-3 sm:py-4 border-b-2 border-dark-black-900 bg-vanilla-100 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-[10px] sm:rounded-[12px] border-2 border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900 shrink-0">
+              <IconEye size={19} />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-figtree font-bold text-[18px] text-dark-black-900">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-figtree font-bold text-[15.5px] sm:text-[18px] text-dark-black-900">
                   Final Print Inspection
                 </span>
-                <span className="font-geist text-[11px] px-2 py-0.5 rounded-[5px] bg-lime-300 border border-dark-black-900 font-bold">
+                <span className="font-geist text-[10.5px] sm:text-[11px] px-2 py-0.5 rounded-[5px] bg-lime-300 border border-dark-black-900 font-bold whitespace-nowrap">
                   {paperDim.name} · {orientation}
                 </span>
               </div>
-              <p className="font-figtree text-[12.5px] text-dark-black-900/60 font-light truncate max-w-md">
+              <p className="font-figtree text-[11.5px] sm:text-[12.5px] text-dark-black-900/60 font-light truncate max-w-md">
                 {file?.name} — Full size inspection with real physical scale & quality simulation
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={onClose}
-              className="w-9 h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-200 hover:bg-err-100 flex items-center justify-center text-dark-black-900 font-bold text-[16px] transition-colors cursor-pointer"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-[10px] border-2 border-dark-black-900 bg-vanilla-200 hover:bg-err-100 flex items-center justify-center text-dark-black-900 font-bold text-[16px] transition-colors cursor-pointer"
               aria-label="Close"
             >
               <IconX size={16} />
@@ -288,11 +292,11 @@ export default function FinalPrintModal({
         {/* Modal Body */}
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-y-auto">
           {/* Main Sheet View (8 cols) */}
-          <div className="lg:col-span-8 flex flex-col border-b-2 lg:border-b-0 lg:border-r-2 border-dark-black-900 bg-dark-black-900/5 p-5 sm:p-6 overflow-y-auto">
+          <div className="lg:col-span-8 flex flex-col border-b-2 lg:border-b-0 lg:border-r-2 border-dark-black-900 bg-dark-black-900/5 p-3 sm:p-6 overflow-y-auto">
             {/* View Toolbar */}
-            <div className="flex items-center justify-between gap-3 mb-4 flex-wrap bg-vanilla-100 border border-dark-black-900 p-2.5 rounded-[12px]">
-              <div className="flex items-center gap-2">
-                <span className="font-figtree text-[12px] font-semibold text-dark-black-900">
+            <div className="flex items-center justify-between gap-2.5 mb-3 sm:mb-4 flex-wrap bg-vanilla-100 border border-dark-black-900 p-2 sm:p-2.5 rounded-[12px]">
+              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                <span className="font-figtree text-[11.5px] sm:text-[12px] font-semibold text-dark-black-900">
                   Zoom:
                 </span>
                 {['75%', '100%', '125%'].map((zStr) => {
@@ -302,7 +306,7 @@ export default function FinalPrintModal({
                       key={zStr}
                       type="button"
                       onClick={() => setZoom(zVal)}
-                      className={`px-2.5 py-1 rounded-[6px] border font-geist text-[11px] font-semibold transition-all cursor-pointer ${
+                      className={`px-2 sm:px-2.5 py-1 rounded-[6px] border font-geist text-[10.5px] sm:text-[11px] font-semibold transition-all cursor-pointer ${
                         zoom === zVal
                           ? 'border-dark-black-900 bg-dark-black-900 text-vanilla-100'
                           : 'border-dark-black-900/30 bg-vanilla-200 hover:bg-lime-300 text-dark-black-900'
@@ -314,8 +318,8 @@ export default function FinalPrintModal({
                 })}
               </div>
 
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-1.5 text-[12px] font-figtree cursor-pointer">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <label className="flex items-center gap-1.5 text-[11.5px] sm:text-[12px] font-figtree cursor-pointer">
                   <input
                     type="checkbox"
                     checked={simulateMono}
@@ -325,7 +329,7 @@ export default function FinalPrintModal({
                   <span>Simulate Grayscale</span>
                 </label>
 
-                <label className="flex items-center gap-1.5 text-[12px] font-figtree cursor-pointer ml-2">
+                <label className="flex items-center gap-1.5 text-[11.5px] sm:text-[12px] font-figtree cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showMargins}
@@ -348,27 +352,32 @@ export default function FinalPrintModal({
             </div>
 
             {/* Centered High-Res Virtual Paper */}
-            <div className="flex-1 flex items-center justify-center p-4">
+            <div className="flex-1 flex items-center justify-center p-1.5 sm:p-4">
               <div
                 style={{
                   aspectRatio: `${paperDim.widthMm} / ${paperDim.heightMm}`,
-                  width: `${modalPaperWidth}px`,
-                  maxWidth: '100%',
+                  width: '100%',
+                  maxWidth: `${modalPaperWidth}px`,
                 }}
-                className={`relative bg-white rounded-[4px] border-2 border-dark-black-900 shadow-[10px_10px_0px_0px_rgba(56,56,56,0.95)] flex flex-col overflow-hidden transition-all duration-200 ${
+                className={`relative bg-white rounded-[4px] border-2 border-dark-black-900 shadow-[6px_6px_0px_0px_rgba(56,56,56,0.95)] sm:shadow-[10px_10px_0px_0px_rgba(56,56,56,0.95)] flex flex-col overflow-hidden transition-all duration-200 mx-auto ${
                   isFlipped ? 'scale-x-[-1]' : ''
                 }`}
               >
                 {/* 5 mm printable area guide, scaled to the real sheet */}
                 {showMargins && !isImage && (
                   <div
-                    style={{ inset: `${modalPaperDim.safeZoneInsetPx}px` }}
+                    style={{
+                      left: `${safeInsetXPct}%`,
+                      right: `${safeInsetXPct}%`,
+                      top: `${safeInsetYPct}%`,
+                      bottom: `${safeInsetYPct}%`,
+                    }}
                     className="absolute border border-dashed border-sky-blue-500/60 pointer-events-none z-20 flex flex-col justify-between p-1"
                   >
-                    <span className="text-[7.5px] font-geist font-bold text-sky-blue-500/80 tracking-wider leading-none">
+                    <span className="text-[6.5px] sm:text-[7.5px] font-geist font-bold text-sky-blue-500/80 tracking-wider leading-none truncate">
                       PRINTABLE SAFE ZONE ({paperDim.name})
                     </span>
-                    <span className="text-[7.5px] font-geist text-sky-blue-500/80 text-right tracking-wider leading-none">
+                    <span className="text-[6.5px] sm:text-[7.5px] font-geist text-sky-blue-500/80 text-right tracking-wider leading-none truncate">
                       {paperDim.widthMm} × {paperDim.heightMm} mm · {orientation}
                     </span>
                   </div>
@@ -393,7 +402,7 @@ export default function FinalPrintModal({
                     {nUp > 1 ? (
                       /* N-Up Multi-Page Grid Simulation */
                       <div
-                        className={`w-full h-full p-4 grid gap-3 items-center justify-center ${
+                        className={`w-full h-full p-2 sm:p-4 grid gap-1.5 sm:gap-3 items-center justify-center ${
                           nUp === 2 ? 'grid-cols-2' : nUp === 4 ? 'grid-cols-2 grid-rows-2' : nUp === 6 ? 'grid-cols-3 grid-rows-2' : nUp === 9 ? 'grid-cols-3 grid-rows-3' : 'grid-cols-4 grid-rows-4'
                         }`}
                       >
@@ -402,19 +411,19 @@ export default function FinalPrintModal({
                           return (
                             <div
                               key={idx}
-                              className="w-full h-full border-2 border-dark-black-900/30 rounded-[4px] bg-vanilla-100 p-2 flex flex-col justify-between overflow-hidden shadow-xs"
+                              className="w-full h-full border-2 border-dark-black-900/30 rounded-[4px] bg-vanilla-100 p-1.5 sm:p-2 flex flex-col justify-between overflow-hidden shadow-xs"
                             >
-                              <div className="flex justify-between font-geist text-[9px] text-dark-black-900/60 font-semibold">
+                              <div className="flex justify-between font-geist text-[8px] sm:text-[9px] text-dark-black-900/60 font-semibold">
                                 <span>Page {subPage}</span>
                                 <span>{subPage <= totalPages ? 'Available' : 'Blank'}</span>
                               </div>
-                              <div className="w-full h-full flex flex-col gap-1.5 my-auto justify-center px-2">
+                              <div className="w-full h-full flex flex-col gap-1 sm:gap-1.5 my-auto justify-center px-1.5 sm:px-2">
                                 <div className="w-3/4 h-2 bg-dark-black-900/40 rounded-[2px]" />
                                 <div className="w-full h-1 bg-dark-black-900/20 rounded-[1px]" />
                                 <div className="w-5/6 h-1 bg-dark-black-900/20 rounded-[1px]" />
                                 <div className="w-2/3 h-1 bg-dark-black-900/20 rounded-[1px]" />
                               </div>
-                              <div className="text-[8px] font-geist text-dark-black-900/40 text-center font-medium">
+                              <div className="text-[7px] sm:text-[8px] font-geist text-dark-black-900/40 text-center font-medium">
                                 {nUp}-Up Grid Sheet
                               </div>
                             </div>
@@ -425,73 +434,85 @@ export default function FinalPrintModal({
                       <canvas ref={canvasRef} className="w-full h-full object-contain pointer-events-none" />
                     ) : isImage && imgUrl && imageLayout ? (
                       <div className="relative w-full h-full overflow-hidden select-none">
-                        {imageLayout.gridItems.map((item) => (
-                          <div
-                            key={item.index}
-                            style={{
-                              position: 'absolute',
-                              left: `${item.xPx}px`,
-                              top: `${item.yPx}px`,
-                              width: `${item.wPx}px`,
-                              height: `${item.hPx}px`,
-                            }}
-                            className={`overflow-hidden border border-dashed border-dark-black-900/50 bg-white shadow-xs ${
-                              imageLayout.isOverflow ? 'ring-2 ring-warn-500' : ''
-                            }`}
-                          >
-                            {(() => {
-                              const zoom = (imgConfig?.zoomLevel ?? 100) / 100
-                              const cropX = imgConfig?.cropPositionX ?? 50
-                              const cropY = imgConfig?.cropPositionY ?? 50
-                              const isCover = imgConfig?.fitMode === 'cover'
-                              const hasZoom = zoom !== 1
-                              const rot = (imgConfig?.rotation || 0) % 360
-                              const isRot90 = rot === 90 || rot === 270
+                        {imageLayout.gridItems.map((item) => {
+                          const leftPct = (item.xMm / (paperDim.widthMm || 210)) * 100
+                          const topPct = (item.yMm / (paperDim.heightMm || 297)) * 100
+                          const widthPct = (item.wMm / (paperDim.widthMm || 210)) * 100
+                          const heightPct = (item.hMm / (paperDim.heightMm || 297)) * 100
 
-                              const imgStyle = isRot90
-                                ? {
-                                    position: 'absolute',
-                                    left: '50%',
-                                    top: '50%',
-                                    width: `${item.hPx}px`,
-                                    height: `${item.wPx}px`,
-                                    transform: `translate(-50%, -50%) rotate(${rot}deg)${hasZoom ? ` scale(${zoom})` : ''}`,
-                                    transformOrigin: 'center center',
-                                    objectPosition: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
-                                  }
-                                : {
-                                    position: 'absolute',
-                                    left: 0,
-                                    top: 0,
-                                    width: '100%',
-                                    height: '100%',
-                                    transform: rot !== 0
-                                      ? `rotate(${rot}deg)${hasZoom ? ` scale(${zoom})` : ''}`
-                                      : hasZoom
-                                        ? `scale(${zoom})`
-                                        : undefined,
-                                    transformOrigin: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
-                                    objectPosition: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
-                                  }
+                          return (
+                            <div
+                              key={item.index}
+                              style={{
+                                position: 'absolute',
+                                left: `${leftPct}%`,
+                                top: `${topPct}%`,
+                                width: `${widthPct}%`,
+                                height: `${heightPct}%`,
+                              }}
+                              className={`overflow-hidden ${
+                                imgConfig?.repeat > 1 ? 'border border-dashed border-dark-black-900/50 shadow-xs' : ''
+                              } bg-white ${
+                                imageLayout.isOverflow ? 'ring-2 ring-warn-500' : ''
+                              }`}
+                            >
+                              {(() => {
+                                const zoom = (imgConfig?.zoomLevel ?? 100) / 100
+                                const cropX = imgConfig?.cropPositionX ?? 50
+                                const cropY = imgConfig?.cropPositionY ?? 50
+                                const isCover = imgConfig?.fitMode === 'cover'
+                                const hasZoom = zoom !== 1
+                                const rot = (imgConfig?.rotation || 0) % 360
+                                const isRot90 = rot === 90 || rot === 270
 
-                              return (
-                                <img
-                                  src={imgUrl}
-                                  alt="Full Preview item"
-                                  style={imgStyle}
-                                  className={`pointer-events-none select-none transition-transform duration-75 ${
-                                    isCover ? 'object-cover' : 'object-contain'
-                                  }`}
-                                />
-                              )
-                            })()}
-                            <div className="absolute bottom-1 right-1 pointer-events-none bg-dark-black-900/80 text-white font-geist text-[8px] font-bold px-1 rounded-[2px] leading-tight">
-                              {Math.round(item.wMm)}×{Math.round(item.hMm)}mm
+                                const rotWidthPct = (item.hMm / Math.max(1, item.wMm)) * 100
+                                const rotHeightPct = (item.wMm / Math.max(1, item.hMm)) * 100
+
+                                const imgStyle = isRot90
+                                  ? {
+                                      position: 'absolute',
+                                      left: '50%',
+                                      top: '50%',
+                                      width: `${rotWidthPct}%`,
+                                      height: `${rotHeightPct}%`,
+                                      transform: `translate(-50%, -50%) rotate(${rot}deg)${hasZoom ? ` scale(${zoom})` : ''}`,
+                                      transformOrigin: 'center center',
+                                      objectPosition: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
+                                    }
+                                  : {
+                                      position: 'absolute',
+                                      left: 0,
+                                      top: 0,
+                                      width: '100%',
+                                      height: '100%',
+                                      transform: rot !== 0
+                                        ? `rotate(${rot}deg)${hasZoom ? ` scale(${zoom})` : ''}`
+                                        : hasZoom
+                                          ? `scale(${zoom})`
+                                          : undefined,
+                                      transformOrigin: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
+                                      objectPosition: (isCover || hasZoom) ? `${cropX}% ${cropY}%` : 'center center',
+                                    }
+
+                                return (
+                                  <img
+                                    src={imgUrl}
+                                    alt="Full Preview item"
+                                    style={imgStyle}
+                                    className={`pointer-events-none select-none transition-transform duration-75 ${
+                                      isCover ? 'object-cover' : 'object-contain'
+                                    }`}
+                                  />
+                                )
+                              })()}
+                              <div className="absolute bottom-1 right-1 pointer-events-none bg-dark-black-900/80 text-white font-geist text-[7px] sm:text-[8px] font-bold px-1 rounded-[2px] leading-tight">
+                                {Math.round(item.wMm)}×{Math.round(item.hMm)}mm
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                        <div className="absolute top-2 left-2 z-20 pointer-events-none">
-                          <span className="font-geist text-[9px] font-bold bg-dark-black-900 text-lime-300 px-2 py-0.5 rounded-[4px] shadow-sm">
+                          )
+                        })}
+                        <div className="absolute top-2 left-2 z-20 pointer-events-none max-w-[90%]">
+                          <span className="inline-block font-geist text-[8px] sm:text-[9px] font-bold bg-dark-black-900 text-lime-300 px-2 py-0.5 rounded-[4px] shadow-sm truncate max-w-full">
                             {imageLayout.dimensionLabel} · {ALIGNMENT_GRID.find((a) => a.id === imgConfig?.alignment)?.hint || 'Center'}
                           </span>
                         </div>

@@ -800,33 +800,33 @@ export default function PrintPage({ onNavigate }) {
   }
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-5 sm:gap-7">
       {/* Page Title & Breadcrumb */}
       <div>
         <div className="flex items-center gap-2 mb-1.5">
           <span className="w-[14px] h-[14px] bg-lime-300 border border-dark-black-900 rounded-[2px] inline-block" />
           <span className="font-geist text-[11px] uppercase tracking-widest text-dark-black-900/60 font-medium">New job</span>
         </div>
-        <h1 className="font-figtree font-semibold text-[36px] leading-tight text-dark-black-900">Print a document</h1>
-        <p className="font-figtree font-light text-dark-black-900/60 text-[15px] mt-0.5">
+        <h1 className="font-figtree font-semibold text-[26px] sm:text-[32px] md:text-[36px] leading-tight text-dark-black-900">Print a document</h1>
+        <p className="font-figtree font-light text-dark-black-900/60 text-[13.5px] sm:text-[15px] mt-0.5">
           Upload your file, inspect the true paper size & simulated output, and send to any printer.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Left Column: Dropzone & Interactive Print Sheet Simulation (7 cols) */}
-        <div className="xl:col-span-7 flex flex-col gap-5">
+        <div className="xl:col-span-7 flex flex-col gap-4 sm:gap-5 min-w-0">
           {!isAuthenticated && (
-            <div className="p-4 rounded-[16px] border-2 border-dark-black-900 bg-lime-300/40 flex items-center justify-between gap-4 shadow-sm flex-wrap">
+            <div className="p-3.5 sm:p-4 rounded-[16px] border-2 border-dark-black-900 bg-lime-300/40 flex items-center justify-between gap-3 sm:gap-4 shadow-sm flex-wrap">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-[11px] bg-vanilla-100 border border-dark-black-900 flex items-center justify-center shrink-0 text-dark-black-900">
                   <IconEye size={20} />
                 </div>
                 <div className="min-w-0 leading-tight">
-                  <div className="font-figtree font-bold text-[14.5px] text-dark-black-900">
+                  <div className="font-figtree font-bold text-[14px] sm:text-[14.5px] text-dark-black-900">
                     You are in Guest Preview Mode
                   </div>
-                  <div className="font-figtree text-[12.5px] text-dark-black-900/70 mt-0.5">
+                  <div className="font-figtree text-[12px] sm:text-[12.5px] text-dark-black-900/70 mt-0.5">
                     Sign in to upload documents, configure print settings, and send jobs.
                   </div>
                 </div>
@@ -868,25 +868,25 @@ export default function PrintPage({ onNavigate }) {
                   fileInputRef.current.click()
                 }
               }}
-              className="relative border-2 border-dashed border-dark-black-900/60 rounded-[20px] p-10 flex flex-col items-center justify-center text-center cursor-pointer bg-vanilla-100 hover:bg-lime-300/30 transition-all duration-200 min-h-[360px]"
+              className="relative border-2 border-dashed border-dark-black-900/60 rounded-[20px] p-5 sm:p-8 md:p-10 flex flex-col items-center justify-center text-center cursor-pointer bg-vanilla-100 hover:bg-lime-300/30 transition-all duration-200 min-h-[280px] sm:min-h-[360px]"
             >
-              <div className="w-16 h-16 rounded-[18px] border-2 border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900 mb-4 shadow-[4px_4px_0_0_rgba(56,56,56,1)]">
-                <IconUpload size={28} />
+              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-[16px] sm:rounded-[18px] border-2 border-dark-black-900 bg-lime-300 flex items-center justify-center text-dark-black-900 mb-3 sm:mb-4 shadow-[4px_4px_0_0_rgba(56,56,56,1)]">
+                <IconUpload size={26} />
               </div>
-              <div className="font-figtree font-bold text-dark-black-900 text-[18px]">
+              <div className="font-figtree font-bold text-dark-black-900 text-[16px] sm:text-[18px]">
                 Drag & drop dokumen atau foto Anda di sini
               </div>
-              <div className="font-figtree font-light text-dark-black-900/60 text-[14px] mt-1 max-w-sm">
+              <div className="font-figtree font-light text-dark-black-900/60 text-[13px] sm:text-[14px] mt-1 max-w-sm">
                 Klik untuk memilih file PDF, Word (.docx), Excel, teks, atau foto gambar.
               </div>
-              <div className="flex flex-wrap gap-2 justify-center mt-5">
+              <div className="flex flex-wrap gap-1.5 sm:gap-2 justify-center mt-4 sm:mt-5">
                 {['PDF', 'PNG', 'JPG', 'TXT', 'DOCX', 'XLSX', 'CSV'].map((t) => (
                   <FileTypeBadge key={t} type={t} />
                 ))}
               </div>
 
               {/* Domain 6: Mobile & Camera Document Scanner */}
-              <div className="flex items-center gap-3 mt-6 pt-4 border-t border-dark-black-900/15">
+              <div className="flex items-center justify-center gap-2.5 sm:gap-3 flex-wrap mt-5 sm:mt-6 pt-4 border-t border-dark-black-900/15 w-full">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -897,9 +897,9 @@ export default function PrintPage({ onNavigate }) {
                     }
                     setCameraModalOpen(true)
                   }}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[12.5px] sm:text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
                 >
-                  <IconCamera size={18} /> Scan Document with Camera
+                  <IconCamera size={17} className="shrink-0" /> Scan Document with Camera
                 </button>
                 <button
                   type="button"
@@ -911,26 +911,26 @@ export default function PrintPage({ onNavigate }) {
                     }
                     setPrinterScanOpen(true)
                   }}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 font-figtree font-bold text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-[12px] border-2 border-dark-black-900 bg-vanilla-100 hover:bg-vanilla-300 font-figtree font-bold text-[12.5px] sm:text-[13.5px] text-dark-black-900 shadow-[3px_3px_0_0_rgba(56,56,56,1)] transition-all cursor-pointer"
                 >
-                  <IconPrinter size={18} /> Scan dari printer
+                  <IconPrinter size={17} className="shrink-0" /> Scan dari printer
                 </button>
               </div>
             </div>
           ) : (
             /* Active File Preview Container */
-            <div className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[22px] p-5 md:p-6 shadow-[4px_4px_0_0_rgba(56,56,56,1)] flex flex-col gap-5">
+            <div className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[18px] sm:rounded-[22px] p-3.5 sm:p-5 md:p-6 shadow-[4px_4px_0_0_rgba(56,56,56,1)] flex flex-col gap-3.5 sm:gap-5">
               {/* File details bar */}
-              <div className="flex items-center justify-between gap-3 flex-wrap pb-4 border-b-2 border-dark-black-900/15">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`w-11 h-11 rounded-[12px] border-2 border-dark-black-900 ${fileMeta(file.name).bg} flex items-center justify-center text-dark-black-900 shrink-0`}>
+              <div className="flex items-center justify-between gap-2.5 sm:gap-3 flex-wrap pb-3.5 sm:pb-4 border-b-2 border-dark-black-900/15">
+                <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+                  <div className={`w-10 h-10 sm:w-11 sm:h-11 rounded-[11px] sm:rounded-[12px] border-2 border-dark-black-900 ${fileMeta(file.name).bg} flex items-center justify-center text-dark-black-900 shrink-0`}>
                     {fileMeta(file.name).icon}
                   </div>
-                  <div className="min-w-0">
-                    <div className="font-figtree font-bold text-dark-black-900 text-[15.5px] truncate max-w-xs md:max-w-md">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-figtree font-bold text-dark-black-900 text-[14.5px] sm:text-[15.5px] truncate">
                       {file.name}
                     </div>
-                    <div className="font-geist text-[11.5px] text-dark-black-900/50 flex items-center gap-1.5 mt-0.5">
+                    <div className="font-geist text-[11px] sm:text-[11.5px] text-dark-black-900/50 flex items-center gap-1.5 flex-wrap mt-0.5">
                       <span>{file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`}</span>
                       <span>·</span>
                       <span className="font-semibold text-dark-black-900">{pageCount} page{pageCount > 1 ? 's' : ''}</span>
@@ -939,13 +939,13 @@ export default function PrintPage({ onNavigate }) {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setFinalModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[9px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[12.5px] transition-colors cursor-pointer shadow-[2px_2px_0_0_rgba(56,56,56,1)]"
+                    className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-[9px] border-2 border-dark-black-900 bg-lime-300 hover:bg-lime-400 font-figtree font-bold text-[12px] sm:text-[12.5px] transition-colors cursor-pointer shadow-[2px_2px_0_0_rgba(56,56,56,1)] whitespace-nowrap"
                   >
-                    <IconEye size={15} /> Final Inspection
+                    <IconEye size={14} className="shrink-0" /> Final Inspection
                   </button>
 
                   {/* Direct Ganti File: opens native file picker immediately */}
@@ -957,7 +957,7 @@ export default function PrintPage({ onNavigate }) {
                         fileInputRef.current.click()
                       }
                     }}
-                    className="px-3 py-1.5 rounded-[9px] border border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 font-figtree text-[12px] font-bold text-dark-black-900 transition-colors cursor-pointer shadow-[1px_1px_0_0_rgba(56,56,56,1)] active:translate-x-0.5 active:translate-y-0.5"
+                    className="px-2.5 sm:px-3 py-1.5 rounded-[9px] border border-dark-black-900 bg-vanilla-100 hover:bg-lime-300 font-figtree text-[11.5px] sm:text-[12px] font-bold text-dark-black-900 transition-colors cursor-pointer shadow-[1px_1px_0_0_rgba(56,56,56,1)] active:translate-x-0.5 active:translate-y-0.5 whitespace-nowrap"
                     title="Ganti dengan file lain"
                   >
                     Ganti File
@@ -976,7 +976,7 @@ export default function PrintPage({ onNavigate }) {
                       setCurrentPage(1)
                       if (fileInputRef.current) fileInputRef.current.value = ''
                     }}
-                    className="px-2.5 py-1.5 rounded-[9px] border border-err-500/30 bg-white hover:bg-err-100 text-err-600 font-figtree text-[12px] font-medium transition-colors cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-[9px] border border-err-500/30 bg-white hover:bg-err-100 text-err-600 font-figtree text-[11.5px] sm:text-[12px] font-medium transition-colors cursor-pointer whitespace-nowrap"
                     title="Hapus file dan kembali ke area upload"
                   >
                     Hapus
@@ -1052,9 +1052,9 @@ export default function PrintPage({ onNavigate }) {
           )}
 
           {/* Destination Printer Selection Card */}
-          <div className="bg-vanilla-200 border-2 border-dark-black-900 rounded-[20px] p-5 shadow-[4px_4px_0_0_rgba(56,56,56,1)]">
+          <div className="bg-vanilla-200 border-2 border-dark-black-900 rounded-[18px] sm:rounded-[20px] p-4 sm:p-5 shadow-[4px_4px_0_0_rgba(56,56,56,1)]">
             <div className="flex items-center justify-between mb-3">
-              <span className="font-figtree font-bold text-[15.5px] text-dark-black-900">Destination Printer</span>
+              <span className="font-figtree font-bold text-[15px] sm:text-[15.5px] text-dark-black-900">Destination Printer</span>
               <span className="font-geist text-[11px] text-dark-black-900/50 uppercase tracking-wider">
                 {printers.filter((p) => p.enabled).length} available
               </span>
@@ -1076,7 +1076,7 @@ export default function PrintPage({ onNavigate }) {
                         }
                       }}
                       disabled={p.status === 'offline'}
-                      className={`flex items-center gap-3 px-3.5 py-3 rounded-[13px] border-2 transition-all duration-150 text-left cursor-pointer ${
+                      className={`flex items-center gap-3 px-3 sm:px-3.5 py-2.5 sm:py-3 rounded-[13px] border-2 transition-all duration-150 text-left cursor-pointer ${
                         isSelected
                           ? 'border-dark-black-900 bg-lime-300 shadow-[3px_3px_0_0_rgba(56,56,56,1)] -translate-y-0.5'
                           : 'border-dark-black-900/25 bg-vanilla-100 hover:border-dark-black-900 hover:bg-vanilla-100'
@@ -1086,10 +1086,10 @@ export default function PrintPage({ onNavigate }) {
                         <IconPrinter size={20} />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="font-figtree font-bold text-[14px] text-dark-black-900 truncate">
+                        <div className="font-figtree font-bold text-[13.5px] sm:text-[14px] text-dark-black-900 truncate">
                           {p.name} {p.isDefault && <span className="font-geist text-[10px] font-normal uppercase text-dark-black-900/60 ml-1">· default</span>}
                         </div>
-                        <div className="font-figtree font-light text-dark-black-900/60 text-[12px] flex items-center gap-1.5 flex-wrap">
+                        <div className="font-figtree font-light text-dark-black-900/60 text-[11.5px] sm:text-[12px] flex items-center gap-1.5 flex-wrap">
                           <span>{p.brand} {p.model}</span>
                           <span>·</span>
                           <span className="font-geist">{p.connection}</span>
@@ -1124,10 +1124,10 @@ export default function PrintPage({ onNavigate }) {
         </div>
 
         {/* Right Column: Print Options & Configuration (5 cols) */}
-        <div className="xl:col-span-5">
-          <div className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[22px] p-6 shadow-[6px_6px_0_0_rgba(56,56,56,1)]">
+        <div className="xl:col-span-5 min-w-0">
+          <div className="relative bg-vanilla-200 border-2 border-dark-black-900 rounded-[18px] sm:rounded-[22px] p-4 sm:p-6 shadow-[4px_4px_0_0_rgba(56,56,56,1)] sm:shadow-[6px_6px_0_0_rgba(56,56,56,1)]">
             <div className="absolute -top-[9px] -right-[9px] w-[18px] h-[18px] border border-dark-black-900 bg-lime-300 rounded-[2px] pointer-events-none" />
-            <h2 className="font-figtree font-bold text-[19px] text-dark-black-900 mb-4">Print Settings</h2>
+            <h2 className="font-figtree font-bold text-[18px] sm:text-[19px] text-dark-black-900 mb-3.5 sm:mb-4">Print Settings</h2>
 
             {/* Settings Tab Switcher */}
             <div className="flex border-b-2 border-dark-black-900/15 mb-5 gap-1 overflow-x-auto pb-1">
